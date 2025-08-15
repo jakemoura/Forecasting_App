@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Forecasting Apps – User Guide</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #151c2f;
+      --panel-2: #0f1630;
+      --text: #e7ecf5;
+      --muted: #b9c2d3;
+      --accent: #6aa9ff;
+      --accent-2: #ffb86b;
+      --ok: #43d17c;
+      --warn: #ffc857;
+      --danger: #ff7676;
+      --info: #2b6cb0;
+    }
+    html, body { background: var(--bg); color: var(--text); font-family: Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 0; }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 20px 60px; }
+    h1 { margin: 0 0 8px; font-size: 32px; }
+    h2 { margin-top: 28px; font-size: 22px; }
+    h3 { margin-top: 22px; font-size: 18px; color: var(--accent); }
+    p, li { color: var(--muted); line-height: 1.65; }
+    code, .kbd { background: #0e1a33; color: #d6e1ff; padding: 0 6px; border-radius: 4px; }
+    .topbar { display: flex; gap: 12px; align-items: center; margin: 14px 0 24px; color: var(--muted); }
+    .chip { background: #0e1a2c; border: 1px solid #1f2a44; padding: 6px 10px; border-radius: 999px; font-size: 12px; }
+    .tabs { display: flex; gap: 8px; border-bottom: 1px solid #1f2a44; margin-top: 10px; }
+    .tab { padding: 10px 14px; cursor: pointer; border: 1px solid transparent; border-top-left-radius: 6px; border-top-right-radius: 6px; color: var(--muted); }
+    .tab.active { color: var(--text); background: var(--panel); border-color: #1f2a44; border-bottom-color: transparent; }
+    .panel { display: none; background: var(--panel); border: 1px solid #1f2a44; border-top: none; padding: 18px 20px 24px; border-bottom-left-radius: 6px; border-bottom-right-radius: 6px; }
+    .panel.active { display: block; }
+    .infobox { background: #0f203d; border: 1px solid #254980; padding: 12px 14px; border-radius: 6px; margin: 12px 0; }
+    .infobox strong { color: #cfe3ff; }
+    .callout { display: grid; gap: 6px; padding: 10px 12px; border-radius: 6px; }
+    .callout.info { background: #0c253e; border: 1px solid #234b71; }
+    .callout.ok { background: #0d2b21; border: 1px solid #246a4d; }
+    .callout.warn { background: #2a230f; border: 1px solid #6a5a24; }
+  /* Banner-style alert: no awkward word wrapping */
+  .banner { display: block; text-align: center; font-weight: 600; line-height: 1.5; word-break: normal; white-space: normal; }
+  .banner strong { color: #fff; }
+    .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+    .card { background: var(--panel-2); border: 1px solid #1f2a44; border-radius: 8px; padding: 14px; }
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+    .kpi { background: #0d1426; border: 1px solid #1f2a44; padding: 10px 12px; border-radius: 8px; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .small { font-size: 13px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .muted { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Forecasting Apps – User Guide</h1>
+    <div class="topbar">
+      <span class="chip">Covers: Forecaster App &amp; Quarterly Outlook Forecaster</span>
+      <span class="chip">Backtesting &amp; Auto (per product)</span>
+      <span class="chip">Offline HTML</span>
+    </div>
+
+    <div class="callout warn banner" role="alert">
+      ⚠️ Important: Double‑click the <span class="mono">.BAT</span> files from <strong>File Explorer</strong> to run the apps. <strong>.BAT files will not run from a web browser.</strong>
+    </div>
+
+    <p class="small">Setup instructions live in <strong>SETUP_GUIDE.html</strong>. This guide explains how to use both apps after setup, how models are chosen, and how backtesting &amp; Auto selection work.</p>
+
+    <div class="tabs" role="tablist" aria-label="Apps">
+      <button id="tab-forecaster" class="tab active" role="tab" aria-controls="panel-forecaster" aria-selected="true">Forecaster App</button>
+      <button id="tab-outlook" class="tab" role="tab" aria-controls="panel-outlook" aria-selected="false">Quarterly Outlook Forecaster</button>
+    </div>
+
+    <!-- Forecaster App Panel -->
+    <section id="panel-forecaster" class="panel active" role="tabpanel" aria-labelledby="tab-forecaster">
+      <h2>What it does</h2>
+      <p>The Forecaster App builds product-level forecasts from your historical time series and compares multiple model families. Results and rationale are surfaced directly in the UI along with downloads.</p>
+
+      <div class="grid">
+        <div class="card">
+          <h3>Quick start</h3>
+          <ol>
+            <li>Open the app via <span class="mono">Forecaster App/RUN_FORECAST_APP.bat</span>.</li>
+            <li>Go to <strong>Data Upload</strong> and load your file (CSV or Excel). Ensure a date/time column and one or more measure columns exist (e.g., quantity/revenue) plus product/category identifiers.</li>
+            <li>Go to <strong>Results</strong>. Use the <em>Selection Mode</em> at the top: <strong>Standard</strong>, <strong>Backtesting</strong>, or <strong>Auto (per product)</strong>.</li>
+            <li>Review the blue info boxes (top and per product) for rationale, MAPE comparisons, and impact.</li>
+            <li>Download the active mode’s results as CSV using the provided button.</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h3>Data expectations</h3>
+          <ul>
+            <li>Regular time index (daily/weekly/monthly). Missing dates are allowed; the app will handle common gaps.</li>
+            <li>At least ~12–18 periods per product recommended for meaningful evaluation; more improves backtesting.</li>
+            <li>Stable identifiers for products or groups to segment forecasts.</li>
+          </ul>
+          <p class="small muted">If data are very sparse or volatile, backtesting may fall back to simpler windows or Standard selection.</p>
+        </div>
+      </div>
+
+      <h2>Selection modes</h2>
+      <div class="infobox">
+        <p><strong>Standard:</strong> Ranks models using a multi-metric blend (MAPE/SMAPE/MASE/RMSE) on the training sample, with sensible business rules (e.g., polynomial safeguards). Produces one “best model” per product.</p>
+        <p><strong>Backtesting:</strong> Uses walk-forward validation (and cross-validation where applicable) to simulate out-of-sample performance. The summary shows validation MAPEs by model.</p>
+        <p><strong>Auto (per product):</strong> For each product the app compares the Standard vs Backtesting MAPEs and picks whichever is lower. You’ll see chosen counts, average MAPE, and impact vs all-Standard at the top.</p>
+      </div>
+
+      <h2>Backtesting details</h2>
+      <ul>
+        <li><strong>Walk-forward windows:</strong> Trains on an initial window, then rolls forward forecasting the next step(s). Results aggregate into per-model MAPEs.</li>
+        <li><strong>Leakage gap:</strong> A small gap can be used between train and validation to reduce leakage with strong autocorrelation or calendar effects.</li>
+        <li><strong>Cross-validation:</strong> Where available, complementary CV stats are added for robustness.</li>
+        <li><strong>Fallbacks:</strong> When history is short, the app reduces folds/horizon or defaults to Standard.</li>
+      </ul>
+
+      <h3>Recommended settings</h3>
+      <ul>
+        <li><strong>Most users:</strong> Validation horizon = <strong>12 months</strong>; Leakage gap = <strong>1 month</strong>.</li>
+        <li><strong>Short history:</strong> Horizon = <strong>6</strong> (or <strong>3</strong>) months; Gap = <strong>0</strong>.</li>
+        <li><strong>Heavy seasonality / long history:</strong> Horizon = <strong>12–18 months</strong>; Gap = <strong>1–2 months</strong>.</li>
+      </ul>
+      <p class="small muted">Walk‑forward typically trains on ~24 months and needs roughly <strong>24 + gap + horizon</strong> months of history. With less history, the app automatically reduces iterations or falls back to Standard.</p>
+
+      <h2>Models compared</h2>
+      <div class="grid">
+        <div class="card"><h3>SARIMA / ETS</h3><p>Classical time-series baselines with trend/seasonality. Good for well-behaved series.</p></div>
+        <div class="card"><h3>Prophet</h3><p>Additive trend with seasonality/holidays; resilient to missing data and shifts.</p></div>
+        <div class="card"><h3>Auto-ARIMA</h3><p>Automated order selection for ARIMA/SARIMA; fast and competitive on many series.</p></div>
+        <div class="card"><h3>LightGBM</h3><p>Gradient-boosted trees on engineered calendar/lag features; handles complex patterns.</p></div>
+        <div class="card"><h3>Polynomial</h3><p>Business-friendly baselines with guardrails to prevent overfit; included in ranking.</p></div>
+      </div>
+
+      <h2>Reading the UI</h2>
+      <div class="kpis">
+        <div class="kpi"><strong>Top blue box</strong><br><span class="muted">Shows Standard vs Backtesting average MAPEs, Auto picks, and total impact.</span></div>
+        <div class="kpi"><strong>Per-product box</strong><br><span class="muted">Explains why a product used Standard or Backtesting and the MAPE delta.</span></div>
+        <div class="kpi"><strong>Downloads</strong><br><span class="muted">Exports the currently selected mode (Standard/Backtesting/Auto).</span></div>
+      </div>
+
+      <h2>Troubleshooting & tips</h2>
+      <ul>
+        <li><strong>No/short history:</strong> Try Standard mode; Auto will fall back gracefully.</li>
+        <li><strong>Zero/near-zero actuals:</strong> MAPE can be unstable. Compare with SMAPE/MASE in details.</li>
+        <li><strong>Outliers/spikes:</strong> Consider smoothing or enabling spike handling if available.</li>
+      </ul>
+    </section>
+
+    <!-- Outlook Panel -->
+    <section id="panel-outlook" class="panel" role="tabpanel" aria-labelledby="tab-outlook">
+      <h2>What it does</h2>
+      <p>The Quarterly Outlook Forecaster (Daily Data Edition) projects quarter performance from partial in-quarter data using a fiscal calendar (e.g., July–June). Results surface by product with a top-level summary and model-rationale boxes.</p>
+
+      <div class="grid">
+        <div class="card">
+          <h3>Quick start</h3>
+          <ol>
+            <li>Open the app via <span class="mono">Quarter Outlook App/RUN_OUTLOOK_FORECASTER.bat</span>.</li>
+            <li>Use the <strong>Data Upload</strong> tab to load your daily data (date, product ID/name, measure columns).</li>
+            <li>Switch to <strong>Outlook Results</strong>. Choose <em>Standard</em>, <em>Backtesting</em>, or <em>Auto (per product)</em>.</li>
+            <li>Review the top blue box for quarter-level MAPE comparison and impact; inspect per-product rationale boxes.</li>
+            <li>Download results for the active mode.</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h3>Data notes</h3>
+          <ul>
+            <li>Daily grain is preferred. The fiscal calendar mapping is applied inside the app.</li>
+            <li>Provide consistent product identifiers across the period.</li>
+            <li>Ensure current quarter has partial data; historical quarters improve model confidence.</li>
+          </ul>
+        </div>
+      </div>
+
+      <h2>Selection modes (same behavior as Forecaster App)</h2>
+      <ul>
+        <li><strong>Standard:</strong> Multi-metric ranking on train sample.</li>
+        <li><strong>Backtesting:</strong> Walk-forward (and CV where available) to simulate true out-of-sample error.</li>
+        <li><strong>Auto (per product):</strong> Picks lower MAPE between Standard and Backtesting for each product and aggregates to hybrid totals.</li>
+      </ul>
+
+      <h2>Backtesting specifics for Outlook</h2>
+  <p>Walk-forward is aligned to the fiscal calendar so each product’s validation windows reflect realistic quarter progression. If history is insufficient, folds/horizon reduce automatically or the app falls back to Standard. You do not set months here—simply choose <em>Standard</em>, <em>Backtesting</em>, or <em>Auto (per product)</em>; Auto will decide per product.</p>
+
+      <h2>Reading the UI</h2>
+      <div class="kpis">
+        <div class="kpi"><strong>Tabs</strong><br><span class="muted">Data Upload → Outlook Results (as shown in the app’s header).</span></div>
+        <div class="kpi"><strong>Top blue box</strong><br><span class="muted">Shows Standard vs Backtesting MAPEs and Auto selection counts &amp; impact.</span></div>
+        <div class="kpi"><strong>Per-product rationale</strong><br><span class="muted">Explains why Standard or Backtesting was used for that product.</span></div>
+      </div>
+
+      <h2>FAQ</h2>
+      <ul>
+        <li><strong>Why does Auto pick Standard for some products?</strong> Because its MAPE beat the Backtesting MAPE for those products.</li>
+        <li><strong>Why don’t I see backtesting for a product?</strong> Too little history may skip or simplify validation; Standard is used.</li>
+        <li><strong>Are totals the same across modes?</strong> Forecasts can differ; the top box reports impact vs all-Standard.</li>
+      </ul>
+    </section>
+
+    <h2>Glossary</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>MAPE</h3>
+        <p>Mean Absolute Percentage Error. Lower is better. Can be unstable near zero actuals.</p>
+      </div>
+      <div class="card">
+        <h3>SMAPE / MASE / RMSE</h3>
+        <p>Complementary error metrics used in Standard ranking for robustness beyond MAPE.</p>
+      </div>
+      <div class="card">
+        <h3>Walk-forward validation</h3>
+        <p>Rolling-origin evaluation that mimics production forecasting by repeatedly training and testing forward in time.</p>
+      </div>
+      <div class="card">
+        <h3>Auto (per product)</h3>
+        <p>Hybrid selection that chooses, for each product, whichever of Standard or Backtesting yielded lower MAPE.</p>
+      </div>
+    </div>
+
+    <div class="callout info" style="margin-top:20px;">
+      <div><strong>Related:</strong> See <span class="mono">Forecaster App/modules/tab_content.py</span> Model Guide for a deeper in-app explanation of modes and backtesting.</div>
+    </div>
+
+    <p class="small muted" style="margin-top:18px;">This guide describes behavior implemented in the current project: multi-model comparison (SARIMA/ETS, Prophet, Auto-ARIMA, LightGBM, Polynomial), Standard ranking with multiple metrics, walk-forward backtesting, and Auto per-product selection with rationale and CSV downloads.</p>
+  </div>
+
+  <script>
+    (function(){
+      const tabs = [
+        {btn: document.getElementById('tab-forecaster'), panel: document.getElementById('panel-forecaster')},
+        {btn: document.getElementById('tab-outlook'), panel: document.getElementById('panel-outlook')}
+      ];
+      function activate(i){
+        tabs.forEach((t, idx) => {
+          const active = idx === i;
+          t.btn.classList.toggle('active', active);
+          t.btn.setAttribute('aria-selected', active ? 'true' : 'false');
+          t.panel.classList.toggle('active', active);
+        });
+      }
+      tabs.forEach((t, i) => t.btn.addEventListener('click', () => activate(i)));
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+[browser] 
+gatherUsageStats = false 
+serverAddress = "127.0.0.1" 
+
+[global] 
+showWarningOnDirectExecution = false
+
+[server] 
+headless = false 
+enableCORS = false 
+enableXsrfProtection = false 
+address = "127.0.0.1" 
+port = 8502 
+
+[client]
+showErrorDetails = false
+toolbarMode = "minimal"
