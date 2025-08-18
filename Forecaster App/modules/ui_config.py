@@ -42,11 +42,6 @@ def create_sidebar_controls():
     data_context_str = str(data_context.get('min_months', 0)) + str(data_context.get('max_months', 0)) + str(analysis_complete)
     sidebar_key = f"sidebar_{data_context_str}_{analysis_complete}"
     
-    # Debug mode toggle
-    debug_mode = st.sidebar.checkbox("🐛 Debug Mode", key="debug_mode")
-    if debug_mode:
-        st.sidebar.caption("Debug mode enabled - check for detailed info")
-    
     st.sidebar.markdown("---")
     
     # Forecast settings
@@ -92,7 +87,7 @@ def create_sidebar_controls():
     business_config = create_business_adjustments_section()
 
     # Accuracy & Validation (separate, auto-opened)
-    accuracy_validation_config = create_accuracy_validation_section(debug_mode)
+    accuracy_validation_config = create_accuracy_validation_section()
     
     # Advanced controls
     advanced_config = create_advanced_options_section()
@@ -178,7 +173,7 @@ def create_business_adjustments_section():
     }
 
 
-def create_accuracy_validation_section(debug_mode=False):
+def create_accuracy_validation_section():
     """Create Accuracy & Validation controls with smart backtesting recommendations."""
     with st.sidebar.expander("🎯 **Accuracy & Validation**", expanded=True):
         st.caption("Smart backtesting validates models against historical data for better accuracy. More months = more robust validation.")
@@ -190,12 +185,6 @@ def create_accuracy_validation_section(debug_mode=False):
         
         # Check if data analysis is complete
         analysis_complete = st.session_state.get('data_analysis_complete', False)
-        
-        # Debug: Show what we're getting
-        if debug_mode:
-            st.caption(f"🔍 Debug: data_context keys: {list(data_context.keys()) if data_context else 'None'}")
-            st.caption(f"🔍 Debug: recommendations: {recommendations}")
-            st.caption(f"🔍 Debug: analysis_complete: {analysis_complete}")
         
         # Smart backtesting slider with data-driven recommendations
         st.markdown("#### 📊 **Backtesting Period**")
@@ -453,9 +442,7 @@ def display_upload_section():
                 with st.spinner("Analyzing your data for optimal backtesting recommendations..."):
                     data_analysis, overall_status = analyze_data_quality(raw)
                     display_data_analysis_results(data_analysis, overall_status)
-                    # Get debug mode from session state
-                    current_debug_mode = st.session_state.get('debug_mode', False)
-                    display_data_context_summary(current_debug_mode)
+                    display_data_context_summary()
                 
                 # Show ready message
                 st.success("✅ **Data Analysis Complete!** Check the sidebar for smart backtesting recommendations.")

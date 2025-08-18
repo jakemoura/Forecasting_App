@@ -219,7 +219,7 @@ def display_seasonal_performance_analysis(advanced_validation_results):
         st.info("No seasonal performance analysis results available.")
 
 
-def display_data_context_summary(debug_mode=False):
+def display_data_context_summary():
     """Display enhanced data context summary with backtesting recommendations."""
     data_context = st.session_state.get('data_context', {})
     if not data_context:
@@ -243,8 +243,6 @@ def display_data_context_summary(debug_mode=False):
                 st.warning(f"{status_icon} **{status_title}**: {status_desc}")
             elif recommendations.get('status') == 'moderate':
                 st.info(f"{status_icon} **{status_title}**: {status_desc}")
-            elif recommendations.get('status') == 'good':
-                st.success(f"{status_icon} **{status_title}**: {status_desc}")
             else:
                 st.success(f"{status_icon} **{status_title}**: {status_desc}")
             
@@ -331,24 +329,12 @@ def display_data_context_summary(debug_mode=False):
         if st.button("🔄 **Refresh Sidebar**", key="refresh_sidebar_after_analysis", help="Click to update the sidebar with new recommendations"):
             st.rerun()
         
-        # Debug information (only show in debug mode)
-        if debug_mode:
-            st.markdown("---")
-            st.markdown("#### 🐛 **Debug Information**")
-            st.json({
-                "data_context": data_context,
-                "recommendations": recommendations,
-                "data_quality": data_quality
-            })
-        
 
 
 def display_backtesting_results(backtesting_results):
     """Display comprehensive backtesting validation results with explanations."""
     if not backtesting_results:
         return
-    
-    with st.expander("🔍 **Backtesting Results & Validation**", expanded=False):
         # Explain what backtesting is and how it works
         st.markdown("#### 📚 **What is Backtesting?**")
         st.info("""
@@ -379,14 +365,20 @@ def display_backtesting_results(backtesting_results):
         st.markdown("#### 📊 **Backtesting Performance Results**")
         
         rows = []
+        total_models = 0
+        successful_backtests = 0
+        
         for product, models in backtesting_results.items():
             for model, res in models.items():
                 if not isinstance(res, dict):
                     continue
                 
+                total_models += 1
+                
                 # Get backtesting results
                 backtesting = res.get('backtesting_validation')
-                if backtesting and backtesting.get('success'):
+                if backtesting and isinstance(backtesting, dict) and backtesting.get('success'):
+                    successful_backtests += 1
                     mape = backtesting.get('mape', 0)
                     backtest_months = backtesting.get('backtest_period', 0)
                     test_months = backtesting.get('test_months', 0)
@@ -396,12 +388,27 @@ def display_backtesting_results(backtesting_results):
                         'Model': model, 
                         'Backtest MAPE%': round(float(mape)*100, 2),
                         'Backtest Period': f"{backtest_months} months",
-                        'Test Period': f"{test_months} months"
+                        'Test Period': f"{test_months} months",
+                        'Status': '✅ Success'
+                    })
+                else:
+                    # Show failed backtesting attempts
+                    rows.append({
+                        'Product': product, 
+                        'Model': model, 
+                        'Backtest MAPE%': 'N/A',
+                        'Backtest Period': 'N/A',
+                        'Test Period': 'N/A',
+                        'Status': '❌ Failed'
                     })
         
         if rows:
-            # Sort by MAPE (best performance first)
-            df = pd.DataFrame(rows).sort_values(['Product', 'Backtest MAPE%'])
+            # Sort by Product, then by Status (Success first), then by MAPE
+            df = pd.DataFrame(rows)
+            df['sort_key'] = df.apply(lambda x: (x['Product'], x['Status'] != '✅ Success', 
+                                                float(x['Backtest MAPE%']) if x['Backtest MAPE%'] != 'N/A' else 999), axis=1)
+            df = df.sort_values('sort_key').drop('sort_key', axis=1)
+            
             st.dataframe(df, hide_index=True, use_container_width=True)
             
             # Performance interpretation
@@ -418,16 +425,14 @@ def display_backtesting_results(backtesting_results):
             st.markdown("#### 📈 **Backtesting Insights**")
             
             # Calculate success rate
-            total_models = sum(len(models) for models in backtesting_results.values())
-            successful_backtests = len(rows)
             success_rate = (successful_backtests / total_models) * 100 if total_models > 0 else 0
             
             if success_rate >= 80:
-                st.success(f"✅ **High Success Rate**: {success_rate:.1f}% of models successfully backtested")
+                st.success(f"✅ **High Success Rate**: {success_rate:.1f}% of models successfully backtested ({successful_backtests}/{total_models})")
             elif success_rate >= 60:
-                st.info(f"📊 **Good Success Rate**: {success_rate:.1f}% of models successfully backtested")
+                st.info(f"📊 **Good Success Rate**: {success_rate:.1f}% of models successfully backtested ({successful_backtests}/{total_models})")
             else:
-                st.warning(f"⚠️ **Low Success Rate**: {success_rate:.1f}% of models successfully backtested")
+                st.warning(f"⚠️ **Low Success Rate**: {success_rate:.1f}% of models successfully backtested ({successful_backtests}/{total_models})")
             
             # Model selection explanation
             st.markdown("#### 🏆 **Model Selection Process**")
@@ -905,6 +910,24 @@ def display_forecast_results():
     st.markdown("## 📈 Results Summary")
     total_products = len({product for model_results in results.values() for product in model_results["Product"].unique()}) if results else 0
     confidence_level = "High" if best_mape <= 15 else ("Medium" if best_mape <= 25 else "Low")
+    
+    # === BACKTESTING RESULTS SECTION ===
+    backtesting_results = st.session_state.get('backtesting_results', {})
+    
+    if backtesting_results:
+        st.markdown("## 🔍 **Backtesting Results & Validation**")
+        st.info("""
+        **Backtesting** validates forecasting models by testing them on historical data they haven't seen during training. 
+        This gives you confidence that the models will perform well on future data.
+        """)
+        
+        # Display backtesting results
+        display_backtesting_results(backtesting_results)
+        
+        st.markdown("---")
+    else:
+        st.info("💡 **Backtesting**: Enable backtesting in the sidebar to see model validation results.")
+        st.markdown("---")
 
     # Short model label mapper (Raw or Mix both -> Mix)
     def _short_model_label(name: str) -> str:
@@ -1840,9 +1863,82 @@ def display_forecast_results():
                 if best_models_per_product:
                     st.markdown(f"- Applied product-by-product model selection for {len(best_models_per_product)} products")
 
-                st.markdown("**Detailed Diagnostics:**")
+                # Categorize diagnostic messages by type
+                st.markdown("**Detailed Diagnostics by Category:**")
+                
+                # Define categories and their icons
+                categories = {
+                    "🚀 **Pipeline & Setup**": ["🎯 Smart Forecasting:", "🔁 Using backtesting", "Processed", "Generated"],
+                    "📊 **Data Processing**": ["Product", "Data processing", "Insufficient data", "outliers", "seasonality"],
+                    "🔧 **Model Training**": ["✅", "❌", "MAPE", "Order", "Seasonal", "criterion"],
+                    "🧪 **Backtesting & Validation**": ["backtesting", "validation", "insufficient data", "Backtesting failed"],
+                    "⚙️ **Business Logic**": ["business adjustments", "growth", "market", "drift", "renewals"],
+                    "⚠️ **Warnings & Errors**": ["⚠️", "❌", "Error", "Failed", "skipping", "not available"]
+                }
+                
+                # Group messages by category
+                categorized_messages = {cat: [] for cat in categories.keys()}
+                uncategorized = []
+                
                 for msg in diagnostic_messages:
-                    st.info(msg)
+                    categorized = False
+                    for cat, keywords in categories.items():
+                        if any(keyword.lower() in msg.lower() for keyword in keywords):
+                            categorized_messages[cat].append(msg)
+                            categorized = True
+                            break
+                    if not categorized:
+                        uncategorized.append(msg)
+                
+                # Display categorized messages
+                for category, messages in categorized_messages.items():
+                    if messages:
+                        with st.expander(category, expanded=False):
+                            for msg in messages:
+                                # Determine message type and styling
+                                if "✅" in msg or "Success" in msg:
+                                    st.success(msg)
+                                elif "❌" in msg or "Error" in msg or "Failed" in msg:
+                                    st.error(msg)
+                                elif "⚠️" in msg or "Warning" in msg:
+                                    st.warning(msg)
+                                elif "📈" in msg or "📊" in msg or "📉" in msg:
+                                    st.info(msg)
+                                elif "🔧" in msg or "⚙️" in msg:
+                                    st.info(msg)
+                                else:
+                                    st.info(msg)
+                
+                # Show uncategorized messages if any
+                if uncategorized:
+                    with st.expander("📝 **Other Messages**", expanded=False):
+                        for msg in uncategorized:
+                            st.info(msg)
+                
+                # Add enhanced logging summary
+                st.markdown("---")
+                st.markdown("**📈 Enhanced Logging Summary:**")
+                
+                # Count by message type
+                success_count = sum(1 for msg in diagnostic_messages if "✅" in msg)
+                error_count = sum(1 for msg in diagnostic_messages if "❌" in msg)
+                warning_count = sum(1 for msg in diagnostic_messages if "⚠️" in msg)
+                info_count = sum(1 for msg in diagnostic_messages if "📊" in msg or "📈" in msg or "📉" in msg)
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("✅ Success", success_count)
+                with col2:
+                    st.metric("❌ Errors", error_count)
+                with col3:
+                    st.metric("⚠️ Warnings", warning_count)
+                with col4:
+                    st.metric("📊 Info", info_count)
+                
+                # Show processing efficiency
+                if total_products > 0:
+                    efficiency = (success_count / (success_count + error_count)) * 100 if (success_count + error_count) > 0 else 0
+                    st.metric("🎯 Processing Efficiency", f"{efficiency:.1f}%")
 
             # SARIMA technical details
             if "SARIMA" in results and sarima_params:

@@ -195,28 +195,42 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
     products = raw_data["Product"].unique()
     backtesting_results = {}  # Store backtesting validation results
     
+    # Enhanced logging: Pipeline initialization
+    diagnostic_messages.append(f"🚀 **Pipeline Initialization**: Starting forecast pipeline with {len(models_selected)} models for {len(products)} products")
+    diagnostic_messages.append(f"📊 **Data Overview**: Total data points: {len(raw_data)}, Date range: {raw_data['Date'].min()} to {raw_data['Date'].max()}")
+    diagnostic_messages.append(f"⚙️ **Configuration**: Backtesting: {enable_backtesting}, Business-aware: {enable_business_aware_selection}, Statistical validation: {enable_statistical_validation}")
+    
     # Prepare data
     try:
         raw_data["Date"] = coerce_month_start(raw_data["Date"])
         raw_data.sort_values("Date", inplace=True)
+        diagnostic_messages.append(f"📅 **Data Preparation**: Successfully standardized dates and sorted data chronologically")
     except ValueError as e:
         raise ValueError(f"Date format error: {str(e)}")
     
     # Count valid products for progress tracking
+    diagnostic_messages.append(f"🔍 **Data Validation**: Analyzing data quality for {len(products)} products...")
     valid_products = _get_valid_products(raw_data, diagnostic_messages)
     total = len(models_selected) * len(valid_products)
     
     if total == 0:
         raise ValueError("No valid products found with sufficient data")
     
+    diagnostic_messages.append(f"✅ **Validation Complete**: {len(valid_products)} products passed quality checks, {len(products) - len(valid_products)} products failed")
+    diagnostic_messages.append(f"📈 **Processing Scope**: Will run {len(models_selected)} models on {len(valid_products)} products = {total} total operations")
+    
     # Initialize progress tracking
     prog = st.progress(0.0, text="Running models…")
     done = 0
     
     # Process each product
+    diagnostic_messages.append(f"🔄 **Starting Product Processing**: Processing {len(valid_products)} products sequentially...")
+    
     for product, grp in raw_data.groupby("Product"):
         if product not in valid_products:
             continue
+        
+        diagnostic_messages.append(f"📦 **Processing Product**: {product} ({len(grp)} data points)")
         
         # Prepare product data
         series = _prepare_product_series(grp, product, diagnostic_messages)
@@ -224,11 +238,13 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
             continue
         
         # Get train/validation split
+        diagnostic_messages.append(f"✂️ **Data Splitting**: Creating train/validation split for {product} ({len(series)} total months)")
         split_result = get_seasonality_aware_split(series, seasonal_period=12, diagnostic_messages=diagnostic_messages)
         if split_result[0] is None:
             continue
         
         train, val = split_result
+        diagnostic_messages.append(f"✅ **Split Complete**: {product} - Training: {len(train)} months, Validation: {len(val)} months")
         
         # Create future date index
         future_idx = pd.date_range(
@@ -404,6 +420,76 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
     st.session_state.product_mases = _create_product_metrics_dict(mases, products, results.keys())
     st.session_state.product_rmses = _create_product_metrics_dict(rmses, products, results.keys())
     
+    # Enhanced completion logging
+    successful_models = sum(1 for model in results.values() if not model.empty)
+    total_expected = len(models_selected) * len(valid_products)
+    success_rate = (successful_models / total_expected) * 100 if total_expected > 0 else 0
+    
+    diagnostic_messages.append(f"🎉 **Pipeline Complete**: Successfully processed {successful_models}/{total_expected} model-product combinations ({success_rate:.1f}% success rate)")
+    diagnostic_messages.append(f"📊 **Results Summary**: Generated forecasts for {len(results)} models across {len(valid_products)} products")
+    
+    # Enhanced backtesting summary with detailed failure analysis
+    if backtesting_results:
+        diagnostic_messages.append("🧪 **DETAILED BACKTESTING ANALYSIS**")
+        
+        # Safe backtesting success calculation with null checks
+        backtesting_success = 0
+        total_backtests = 0
+        failed_backtests = []
+        skipped_backtests = []
+        
+        for product_name, product_models in backtesting_results.items():
+            if isinstance(product_models, dict):
+                diagnostic_messages.append(f"📦 **Product: {product_name}**")
+                
+                for model_name, model_result in product_models.items():
+                    total_backtests += 1
+                    
+                    if model_result is None:
+                        skipped_backtests.append(f"{model_name} for {product_name} (result was None)")
+                        diagnostic_messages.append(f"  ❌ **{model_name}**: Backtesting result was None - likely model failed to train")
+                    elif isinstance(model_result, dict):
+                        backtesting_validation = model_result.get('backtesting_validation')
+                        
+                        if backtesting_validation is None:
+                            skipped_backtests.append(f"{model_name} for {product_name} (no backtesting validation)")
+                            diagnostic_messages.append(f"  ⚠️ **{model_name}**: No backtesting validation available - model may have failed or been skipped")
+                        elif isinstance(backtesting_validation, dict):
+                            if backtesting_validation.get('success'):
+                                backtesting_success += 1
+                                mape = backtesting_validation.get('mape', 0)
+                                test_months = backtesting_validation.get('test_months', 0)
+                                diagnostic_messages.append(f"  ✅ **{model_name}**: Backtesting successful - MAPE: {mape*100:.1f}%, Test period: {test_months} months")
+                            else:
+                                failed_backtests.append(f"{model_name} for {product_name}")
+                                error_msg = backtesting_validation.get('error', 'Unknown error')
+                                diagnostic_messages.append(f"  ❌ **{model_name}**: Backtesting failed - Error: {error_msg}")
+                        else:
+                            failed_backtests.append(f"{model_name} for {product_name}")
+                            diagnostic_messages.append(f"  ❌ **{model_name}**: Invalid backtesting validation format")
+                    else:
+                        failed_backtests.append(f"{model_name} for {product_name}")
+                        diagnostic_messages.append(f"  ❌ **{model_name}**: Unexpected result type: {type(model_result)}")
+                
+                diagnostic_messages.append("")  # Add spacing between products
+        
+        # Summary statistics
+        if total_backtests > 0:
+            backtesting_rate = (backtesting_success / total_backtests) * 100
+            diagnostic_messages.append(f"📊 **BACKTESTING SUMMARY STATISTICS**")
+            diagnostic_messages.append(f"  • Total backtests attempted: {total_backtests}")
+            diagnostic_messages.append(f"  • Successful backtests: {backtesting_success}")
+            diagnostic_messages.append(f"  • Failed backtests: {len(failed_backtests)}")
+            diagnostic_messages.append(f"  • Skipped backtests: {len(skipped_backtests)}")
+            diagnostic_messages.append(f"  • Success rate: {backtesting_rate:.1f}%")
+            
+            if failed_backtests:
+                diagnostic_messages.append(f"  • Failed combinations: {', '.join(failed_backtests)}")
+            if skipped_backtests:
+                diagnostic_messages.append(f"  • Skipped combinations: {', '.join(skipped_backtests)}")
+        else:
+            diagnostic_messages.append("🧪 **Backtesting Summary**: No backtesting results available")
+    
     return (results, avg_mapes, sarima_params, diagnostic_messages,
             {'smapes': avg_smapes, 'mases': avg_mases, 'rmses': avg_rmses},
             best_models_per_product, best_mapes_per_product, backtesting_results)
@@ -483,6 +569,7 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
     
     # SARIMA model
     if "SARIMA" in models_selected:
+        diagnostic_messages.append(f"🔧 **Starting SARIMA**: Training SARIMA model for {product} (seasonality strength: {seasonality_strength:.2f})")
         done = _run_sarima_model(
             product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
             sarima_params, diagnostic_messages, seasonality_strength, enable_statistical_validation,
@@ -493,6 +580,7 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
     
     # ETS model
     if "ETS" in models_selected:
+        diagnostic_messages.append(f"🔧 **Starting ETS**: Training Exponential Smoothing model for {product}")
         done = _run_ets_model(
             product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
             diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
@@ -505,6 +593,7 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
     for poly_degree in [2, 3]:
         model_name = f"Poly-{poly_degree}"
         if model_name in models_selected:
+            diagnostic_messages.append(f"🔧 **Starting {model_name}**: Training {poly_degree}-degree polynomial model for {product}")
             done = _run_polynomial_model(
                 product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
                 diagnostic_messages, poly_degree, apply_business_adjustments,
@@ -515,6 +604,7 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
     
     # Prophet model
     if "Prophet" in models_selected and HAVE_PROPHET:
+        diagnostic_messages.append(f"🔧 **Starting Prophet**: Training Facebook Prophet model for {product} (holidays: {enable_prophet_holidays})")
         done = _run_prophet_model(
             product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
             diagnostic_messages, enable_prophet_holidays, enable_statistical_validation,
@@ -525,6 +615,7 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
     
     # Auto-ARIMA model
     if "Auto-ARIMA" in models_selected and HAVE_PMDARIMA:
+        diagnostic_messages.append(f"🔧 **Starting Auto-ARIMA**: Training automatic ARIMA model for {product}")
         done = _run_auto_arima_model(
             product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
             diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
@@ -535,6 +626,7 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
     
     # LightGBM model
     if "LightGBM" in models_selected and HAVE_LGBM:
+        diagnostic_messages.append(f"🔧 **Starting LightGBM**: Training gradient boosting model for {product}")
         done = _run_lightgbm_model(
             product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
             diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
@@ -637,8 +729,10 @@ def _run_sarima_model(product, series, train, val, future_idx, act_df, results, 
                     try:
                         # Check if we have enough data for backtesting
                         if len(series) < (backtest_months + validation_horizon + backtest_gap + 12):
-                            diagnostic_messages.append(f"⚠️ SARIMA backtesting skipped for {product}: insufficient data for {backtest_months} month backtesting")
+                            required_months = backtest_months + validation_horizon + backtest_gap + 12
+                            diagnostic_messages.append(f"⚠️ **SARIMA Backtesting Skipped**: {product} - Insufficient data for {backtest_months} month backtesting (need {required_months} months, have {len(series)})")
                         else:
+                            diagnostic_messages.append(f"🧪 **SARIMA Backtesting**: Starting backtesting for {product} with {backtest_months} months validation period")
                             sarima_fit_fn = create_sarima_fitting_function(order=order, seasonal_order=seasonal_order)
                             validation_results = comprehensive_validation_suite(
                                 actual=val.values,
@@ -657,8 +751,13 @@ def _run_sarima_model(product, series, train, val, future_idx, act_df, results, 
                             if product not in backtesting_results:
                                 backtesting_results[product] = {}
                             backtesting_results[product]["SARIMA"] = validation_results
+                            diagnostic_messages.append(f"✅ **SARIMA Backtesting**: Successfully completed backtesting for {product}")
                     except Exception as e:
-                        diagnostic_messages.append(f"⚠️ SARIMA Backtesting failed for {product}: {str(e)[:50]}")
+                        error_msg = str(e)[:100]  # Get more of the error message
+                        diagnostic_messages.append(f"❌ **SARIMA Backtesting Failed**: {product} - Error: {error_msg}")
+                        if product not in backtesting_results:
+                            backtesting_results[product] = {}
+                        backtesting_results[product]["SARIMA"] = None
             else:
                 diagnostic_messages.append(f"❌ SARIMA Product {product}: Final model training failed")
                 _add_failed_metrics("SARIMA", mapes, smapes, mases, rmses)
@@ -719,8 +818,10 @@ def _run_ets_model(product, series, train, val, future_idx, act_df, results, map
             try:
                 # Check if we have enough data for backtesting
                 if len(series) < (backtest_months + validation_horizon + backtest_gap + 12):
-                    diagnostic_messages.append(f"⚠️ ETS backtesting skipped for {product}: insufficient data for {backtest_months} month backtesting")
+                    required_months = backtest_months + validation_horizon + backtest_gap + 12
+                    diagnostic_messages.append(f"⚠️ **ETS Backtesting Skipped**: {product} - Insufficient data for {backtest_months} month backtesting (need {required_months} months, have {len(series)})")
                 else:
+                    diagnostic_messages.append(f"🧪 **ETS Backtesting**: Starting backtesting for {product} with {backtest_months} months validation period")
                     ets_fitting_func = create_ets_fitting_function(seasonal_type)
                     validation_results = comprehensive_validation_suite(
                         actual=val.values,
@@ -739,8 +840,13 @@ def _run_ets_model(product, series, train, val, future_idx, act_df, results, map
                     if product not in backtesting_results:
                         backtesting_results[product] = {}
                     backtesting_results[product]["ETS"] = validation_results
+                    diagnostic_messages.append(f"✅ **ETS Backtesting**: Successfully completed backtesting for {product}")
             except Exception as e:
-                diagnostic_messages.append(f"⚠️ ETS Backtesting failed for {product}: {str(e)[:50]}")
+                error_msg = str(e)[:100]  # Get more of the error message
+                diagnostic_messages.append(f"❌ **ETS Backtesting Failed**: {product} - Error: {error_msg}")
+                if product not in backtesting_results:
+                    backtesting_results[product] = {}
+                backtesting_results[product]["ETS"] = None
         # Store results after any corrections
         fore_df = pd.DataFrame({"Product": product, "Date": future_idx, "ACR": pf, "Type": "forecast"})
         results["ETS"].append(pd.concat([act_df, fore_df], ignore_index=True))
@@ -813,8 +919,10 @@ def _run_polynomial_model(product, series, train, val, future_idx, act_df, resul
                 try:
                     # Check if we have enough data for backtesting
                     if len(series) < (backtest_months + validation_horizon + backtest_gap + 12):
-                        diagnostic_messages.append(f"⚠️ {model_name} backtesting skipped for {product}: insufficient data for {backtest_months} month backtesting")
+                        required_months = backtest_months + validation_horizon + backtest_gap + 12
+                        diagnostic_messages.append(f"⚠️ **{model_name} Backtesting Skipped**: {product} - Insufficient data for {backtest_months} month backtesting (need {required_months} months, have {len(series)})")
                     else:
+                        diagnostic_messages.append(f"🧪 **{model_name} Backtesting**: Starting backtesting for {product} with {backtest_months} months validation period")
                         poly_fit_fn = create_polynomial_fitting_function(degree=degree)
                         validation_results = comprehensive_validation_suite(
                             actual=val.values,
@@ -834,8 +942,13 @@ def _run_polynomial_model(product, series, train, val, future_idx, act_df, resul
                         if product not in backtesting_results:
                             backtesting_results[product] = {}
                         backtesting_results[product][model_name] = validation_results
+                        diagnostic_messages.append(f"✅ **{model_name} Backtesting**: Successfully completed backtesting for {product}")
                 except Exception as e:
-                    diagnostic_messages.append(f"⚠️ {model_name} Backtesting failed for {product}: {str(e)[:50]}")
+                    error_msg = str(e)[:100]  # Get more of the error message
+                    diagnostic_messages.append(f"❌ **{model_name} Backtesting Failed**: {product} - Error: {error_msg}")
+                    if product not in backtesting_results:
+                        backtesting_results[product] = {}
+                    backtesting_results[product][model_name] = None
         else:
             diagnostic_messages.append(f"❌ {model_name} Product {product}: Poor fit (MAPE {val_mape:.1%}), skipping")
             _add_failed_metrics(model_name, mapes, smapes, mases, rmses)
@@ -935,8 +1048,10 @@ def _run_prophet_model(product, series, train, val, future_idx, act_df, results,
             try:
                 # Check if we have enough data for backtesting
                 if len(series) < (backtest_months + validation_horizon + backtest_gap + 12):
-                    diagnostic_messages.append(f"⚠️ Prophet backtesting skipped for {product}: insufficient data for {backtest_months} month backtesting")
+                    required_months = backtest_months + validation_horizon + backtest_gap + 12
+                    diagnostic_messages.append(f"⚠️ **Prophet Backtesting Skipped**: {product} - Insufficient data for {backtest_months} month backtesting (need {required_months} months, have {len(series)})")
                 else:
+                    diagnostic_messages.append(f"🧪 **Prophet Backtesting**: Starting backtesting for {product} with {backtest_months} months validation period")
                     prophet_fit_fn = create_prophet_fitting_function(enable_holidays=bool(holidays_df is not None))
                     validation_results = comprehensive_validation_suite(
                         actual=val.values,
@@ -955,14 +1070,18 @@ def _run_prophet_model(product, series, train, val, future_idx, act_df, results,
                     if product not in backtesting_results:
                         backtesting_results[product] = {}
                     backtesting_results[product]["Prophet"] = validation_results
+                    diagnostic_messages.append(f"✅ **Prophet Backtesting**: Successfully completed backtesting for {product}")
             except Exception as e:
-                error_msg = str(e)[:50]
+                error_msg = str(e)[:100]  # Get more of the error message
                 if "prophet not available" in error_msg.lower():
-                    diagnostic_messages.append(f"⚠️ Prophet backtesting skipped for {product}: Prophet package not available")
+                    diagnostic_messages.append(f"⚠️ **Prophet Backtesting Skipped**: {product} - Prophet package not available")
                 else:
-                    diagnostic_messages.append(f"⚠️ Prophet Backtesting failed for {product}: {error_msg}")
+                    diagnostic_messages.append(f"❌ **Prophet Backtesting Failed**: {product} - Error: {error_msg}")
+                    if product not in backtesting_results:
+                        backtesting_results[product] = {}
+                    backtesting_results[product]["Prophet"] = None
         elif enable_backtesting and not HAVE_PROPHET:
-            diagnostic_messages.append(f"⚠️ Prophet backtesting skipped for {product}: Prophet package not available")
+            diagnostic_messages.append(f"⚠️ **Prophet Backtesting Skipped**: {product} - Prophet package not available")
         
     except Exception as e:
         diagnostic_messages.append(f"❌ Prophet Product {product}: {str(e)[:50]}")
@@ -1048,8 +1167,10 @@ def _run_auto_arima_model(product, series, train, val, future_idx, act_df, resul
             try:
                 # Check if we have enough data for backtesting
                 if len(series) < (backtest_months + validation_horizon + backtest_gap + 12):
-                    diagnostic_messages.append(f"⚠️ Auto-ARIMA backtesting skipped for {product}: insufficient data for {backtest_months} month backtesting")
+                    required_months = backtest_months + validation_horizon + backtest_gap + 12
+                    diagnostic_messages.append(f"⚠️ **Auto-ARIMA Backtesting Skipped**: {product} - Insufficient data for {backtest_months} month backtesting (need {required_months} months, have {len(series)})")
                 else:
+                    diagnostic_messages.append(f"🧪 **Auto-ARIMA Backtesting**: Starting backtesting for {product} with {backtest_months} months validation period")
                     aa_fit_fn = create_auto_arima_fitting_function()
                     validation_results = comprehensive_validation_suite(
                         actual=val.values,
@@ -1069,10 +1190,13 @@ def _run_auto_arima_model(product, series, train, val, future_idx, act_df, resul
                     if product not in backtesting_results:
                         backtesting_results[product] = {}
                     backtesting_results[product]["Auto-ARIMA"] = validation_results
+                    diagnostic_messages.append(f"✅ **Auto-ARIMA Backtesting**: Successfully completed backtesting for {product}")
             except Exception as e:
-                diagnostic_messages.append(
-                    f"⚠️ Auto-ARIMA Backtesting failed for {product}: {str(e)[:50]}"
-                )
+                error_msg = str(e)[:100]  # Get more of the error message
+                diagnostic_messages.append(f"❌ **Auto-ARIMA Backtesting Failed**: {product} - Error: {error_msg}")
+                if product not in backtesting_results:
+                    backtesting_results[product] = {}
+                backtesting_results[product]["Auto-ARIMA"] = None
 
     except Exception as e:
         diagnostic_messages.append(f"❌ Auto-ARIMA Product {product}: {str(e)[:50]}")
@@ -1165,8 +1289,10 @@ def _run_lightgbm_model(product, series, train, val, future_idx, act_df, results
                         try:
                             # Check if we have enough data for backtesting
                             if len(series) < (backtest_months + validation_horizon + backtest_gap + 12):
-                                diagnostic_messages.append(f"⚠️ LightGBM backtesting skipped for {product}: insufficient data for {backtest_months} month backtesting")
+                                required_months = backtest_months + validation_horizon + backtest_gap + 12
+                                diagnostic_messages.append(f"⚠️ **LightGBM Backtesting Skipped**: {product} - Insufficient data for {backtest_months} month backtesting (need {required_months} months, have {len(series)})")
                             else:
+                                diagnostic_messages.append(f"🧪 **LightGBM Backtesting**: Starting backtesting for {product} with {backtest_months} months validation period")
                                 # Simple fitting function reusing leak-safe approach for backtests
                                 def lgbm_fit_fn(train_ts, **kwargs):
                                     return fit_best_lightgbm(train_ts.iloc[:-12], train_ts.iloc[-12:], None)[0] if len(train_ts) > 24 else None
@@ -1188,8 +1314,13 @@ def _run_lightgbm_model(product, series, train, val, future_idx, act_df, results
                                 if product not in backtesting_results:
                                     backtesting_results[product] = {}
                                 backtesting_results[product]["LightGBM"] = validation_results
+                                diagnostic_messages.append(f"✅ **LightGBM Backtesting**: Successfully completed backtesting for {product}")
                         except Exception as e:
-                            diagnostic_messages.append(f"⚠️ LightGBM Backtesting failed for {product}: {str(e)[:50]}")
+                            error_msg = str(e)[:100]  # Get more of the error message
+                            diagnostic_messages.append(f"❌ **LightGBM Backtesting Failed**: {product} - Error: {error_msg}")
+                            if product not in backtesting_results:
+                                backtesting_results[product] = {}
+                            backtesting_results[product]["LightGBM"] = None
                 else:
                     _add_failed_metrics("LightGBM", mapes, smapes, mases, rmses)
         
