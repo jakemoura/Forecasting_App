@@ -702,7 +702,11 @@ def simple_backtesting_validation(series, model_fitting_func, backtest_months=12
                 'gap': backtest_gap,
                 'validation_horizon': validation_horizon,
                 'enhanced_analysis': enhanced,
-                'success': True
+                'success': True,
+                # Add data for chart overlay
+                'train_data': train_data,
+                'test_data': test_data,
+                'predictions': forecast
             }
             
         except Exception as e:

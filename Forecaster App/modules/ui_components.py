@@ -535,10 +535,26 @@ def display_product_forecast(data, product, model_name, best_models_per_product=
             else:
                 st.warning(f"⚠️ {mape_val:.1f}% MAPE")
     
-    # Create the main forecast chart
+    # Create the main forecast chart with optional backtesting overlay
     try:
-        chart = create_forecast_chart(product_data, product, model_name)
+        # Prepare backtesting data if available
+        backtesting_results = st.session_state.get('backtesting_results', {})
+        backtesting_chart_data = prepare_backtesting_chart_data(backtesting_results, product, model_name)
+        
+        # Create chart with backtesting overlay
+        chart = create_forecast_chart(product_data, product, model_name, backtesting_chart_data)
         st.altair_chart(chart, use_container_width=True)
+        
+        # Show backtesting legend if backtesting data is available
+        if backtesting_chart_data is not None and not backtesting_chart_data.empty:
+            st.info("""
+            **📊 Chart Legend:**
+            - 🔵 **Blue Line**: Historical actual data
+            - 🟠 **Orange Dashed**: Future forecast
+            - 🟢 **Green Dashed**: Backtesting predictions (what the model predicted during validation)
+            - 🟢 **Green Solid**: Backtesting actuals (real values during validation period)
+            """)
+            
     except Exception as e:
         st.error(f"❌ Chart generation failed: {str(e)}")
         # Fallback: show data table
@@ -562,14 +578,76 @@ def display_product_forecast(data, product, model_name, best_models_per_product=
             st.metric("📅 Months", f"{months_count}")
 
 
-def create_forecast_chart(data, product_name, model_name):
+def prepare_backtesting_chart_data(backtesting_results, product_name, model_name):
     """
-    Create an Altair chart for forecast visualization.
+    Prepare backtesting data for chart overlay.
+    
+    Args:
+        backtesting_results: Dictionary containing backtesting results
+        product_name: Name of the product
+        model_name: Name of the model
+    
+    Returns:
+        DataFrame with backtesting data formatted for charting, or None if no data
+    """
+    if not backtesting_results or product_name not in backtesting_results:
+        return None
+    
+    product_results = backtesting_results[product_name]
+    if not product_results or model_name not in product_results:
+        return None
+    
+    model_result = product_results[model_name]
+    if not model_result or not isinstance(model_result, dict):
+        return None
+    
+    backtesting_validation = model_result.get('backtesting_validation')
+    if not backtesting_validation or not isinstance(backtesting_validation, dict):
+        return None
+    
+    # Extract backtesting data
+    train_data = backtesting_validation.get('train_data')
+    test_data = backtesting_validation.get('test_data')
+    predictions = backtesting_validation.get('predictions')
+    
+    if train_data is None or test_data is None or predictions is None:
+        return None
+    
+    # Create DataFrame for charting
+    chart_data = []
+    
+    # Add backtesting predictions (what the model predicted)
+    if len(test_data) == len(predictions):
+        for i, (date, pred) in enumerate(zip(test_data.index, predictions)):
+            chart_data.append({
+                'Date': date,
+                'ACR': pred,
+                'Type': 'backtest-prediction'
+            })
+    
+    # Add backtesting actuals (real values during test period)
+    for date, actual in test_data.items():
+        chart_data.append({
+            'Date': date,
+            'ACR': actual,
+            'Type': 'backtest-actual'
+        })
+    
+    if not chart_data:
+        return None
+    
+    return pd.DataFrame(chart_data)
+
+
+def create_forecast_chart(data, product_name, model_name, backtesting_data=None):
+    """
+    Create an Altair chart for forecast visualization with optional backtesting overlay.
     
     Args:
         data: DataFrame with forecast data
         product_name: Name of the product
         model_name: Name of the model
+        backtesting_data: Optional DataFrame with backtesting results
     
     Returns:
         Altair chart object
@@ -622,11 +700,45 @@ def create_forecast_chart(data, product_name, model_name):
         tooltip=['Date:T', 'ACR:Q', 'Type:N']
     )
     
+    # Initialize chart layers
+    chart_layers = [historical, forecast, noncompliant]
+    
+    # Add backtesting overlay if available
+    if backtesting_data is not None and not backtesting_data.empty:
+        # Backtesting predictions (what the model predicted during validation)
+        backtest_predictions = base.transform_filter(
+            alt.datum.Type == 'backtest-prediction'
+        ).mark_line(
+            point=True,
+            color='green',
+            strokeWidth=2,
+            strokeDash=[8, 4]
+        ).encode(
+            x='Date:T',
+            y='ACR:Q',
+            tooltip=['Date:T', 'ACR:Q', 'Type:N']
+        )
+        
+        # Backtesting actuals (real values during validation period)
+        backtest_actuals = base.transform_filter(
+            alt.datum.Type == 'backtest-actual'
+        ).mark_line(
+            point=True,
+            color='darkgreen',
+            strokeWidth=3
+        ).encode(
+            x='Date:T',
+            y='ACR:Q',
+            tooltip=['Date:T', 'ACR:Q', 'Type:N']
+        )
+        
+        chart_layers.extend([backtest_predictions, backtest_actuals])
+    
     # Combine all layers
-    chart = (historical + forecast + noncompliant).resolve_scale(
+    chart = alt.layer(*chart_layers).resolve_scale(
         color='independent'
     ).properties(
-        title=f'{product_name} - {model_name} Forecast',
+        title=f'{product_name} - {model_name} Forecast{" + Backtesting" if backtesting_data is not None and not backtesting_data.empty else ""}',
         height=400,
         width='container'
     )
