@@ -87,8 +87,9 @@ def clear_session_state_for_new_forecast():
         'product_adjustments_applied', 'yearly_renewals_applied',
         'business_aware_selection_used', 'forecast_smapes', 
         'forecast_mases', 'forecast_rmses', 'product_smapes',
-    'product_mases', 'product_rmses',
-    'best_models_per_product_standard', 'best_models_per_product_backtesting'
+        'product_mases', 'product_rmses',
+        'best_models_per_product_standard', 'best_models_per_product_backtesting',
+        'data_context'  # Clear data context for fresh analysis
     ]
     
     for key in keys_to_clear:

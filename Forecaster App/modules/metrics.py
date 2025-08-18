@@ -618,38 +618,138 @@ def seasonal_mape_analysis(actual, forecast, dates, product_name="", fiscal_year
     return analysis
 
 
+def simple_backtesting_validation(series, model_fitting_func, backtest_months=12, backtest_gap=1, 
+                                 validation_horizon=12, model_params=None, diagnostic_messages=None):
+    """
+    Simple backtesting validation using a single train/test split.
+    
+    Args:
+        series: Full time series data
+        model_fitting_func: Function for fitting models
+        backtest_months: Number of months to use for backtesting
+        backtest_gap: Gap between training and test data (months)
+        validation_horizon: How far ahead to predict in backtesting
+        model_params: Parameters for model fitting
+        diagnostic_messages: List to append diagnostic messages
+    
+    Returns:
+        Dictionary with backtesting results or None if validation fails
+    """
+    try:
+        # Calculate minimum data requirements
+        min_training_data = 12  # Minimum months needed for training
+        min_test_data = 3       # Minimum months needed for testing
+        total_required = backtest_months + validation_horizon + backtest_gap + min_training_data
+        
+        if len(series) < total_required:
+            if diagnostic_messages:
+                diagnostic_messages.append(f"⚠️ Insufficient data for {backtest_months} month backtesting. Need at least {total_required} months (have {len(series)}).")
+            return None
+        
+        # Split data: train on everything except last (backtest_months + gap) months
+        split_point = len(series) - backtest_months - backtest_gap
+        train_data = series.iloc[:split_point]
+        test_data = series.iloc[split_point:split_point + validation_horizon]
+        
+        if len(train_data) < 12 or len(test_data) < 3:
+            if diagnostic_messages:
+                diagnostic_messages.append(f"⚠️ Split resulted in insufficient train/test data: {len(train_data)} train, {len(test_data)} test months.")
+            return None
+        
+        # Fit model on training data
+        try:
+            fitted_model = model_fitting_func(train_data, **model_params) if model_params else model_fitting_func(train_data)
+            
+            # Generate predictions for test period
+            try:
+                if hasattr(fitted_model, 'forecast'):
+                    forecast = fitted_model.forecast(steps=len(test_data))
+                elif hasattr(fitted_model, 'predict'):
+                    # For models that need future dates
+                    future_dates = pd.date_range(
+                        start=test_data.index[0], 
+                        periods=len(test_data), 
+                        freq='MS'
+                    )
+                    forecast = fitted_model.predict(future_dates)
+                else:
+                    if diagnostic_messages:
+                        diagnostic_messages.append(f"⚠️ Model doesn't support forecasting")
+                    return None
+            except Exception as forecast_error:
+                if diagnostic_messages:
+                    diagnostic_messages.append(f"⚠️ Model forecasting failed: {str(forecast_error)[:50]}")
+                return None
+            
+            # Calculate validation metrics
+            mape, smape_val, mase_val, rmse_val = calculate_validation_metrics(
+                test_data.values, forecast, train_data.values
+            )
+            
+            # Enhanced MAPE analysis for the backtesting period
+            enhanced = enhanced_mape_analysis(
+                test_data.values, forecast, test_data.index, ""
+            )
+            
+            return {
+                'mape': mape,
+                'smape': smape_val,
+                'mase': mase_val,
+                'rmse': rmse_val,
+                'train_months': len(train_data),
+                'test_months': len(test_data),
+                'backtest_period': backtest_months,
+                'gap': backtest_gap,
+                'validation_horizon': validation_horizon,
+                'enhanced_analysis': enhanced,
+                'success': True
+            }
+            
+        except Exception as e:
+            if diagnostic_messages:
+                diagnostic_messages.append(f"⚠️ Model fitting failed during backtesting: {str(e)[:50]}")
+            return None
+            
+    except Exception as e:
+        if diagnostic_messages:
+            diagnostic_messages.append(f"⚠️ Backtesting validation failed: {str(e)[:50]}")
+        return None
+
+
 def comprehensive_validation_suite(actual, forecast, dates=None, product_name="",
                                   enable_walk_forward=False, enable_cross_validation=False,
                                   series=None, model_fitting_func=None, model_params=None,
                                   diagnostic_messages=None,
-                                  backtest_gap: int = 0,
-                                  validation_horizon: int | None = None,
-                                  fiscal_year_start_month: int = 1):
+                                  backtest_months=12, backtest_gap=1,
+                                  validation_horizon=12, fiscal_year_start_month=1):
     """
-    Run comprehensive validation analysis combining all validation methods.
+    Simplified validation suite that focuses on basic backtesting.
     
     Args:
         actual: Array of actual values for basic validation
         forecast: Array of forecasted values for basic validation
         dates: Array of dates corresponding to the values
         product_name: Name of the product for reporting
-        enable_walk_forward: Whether to run walk-forward validation
-        enable_cross_validation: Whether to run cross-validation
-        series: Full time series for advanced validation methods
-        model_fitting_func: Function for fitting models in advanced validation
+        enable_walk_forward: Ignored (kept for compatibility)
+        enable_cross_validation: Ignored (kept for compatibility)
+        series: Full time series for backtesting
+        model_fitting_func: Function for fitting models in backtesting
         model_params: Parameters for model fitting
         diagnostic_messages: List to append diagnostic messages
+        backtest_months: Number of months to use for backtesting
+        backtest_gap: Gap between training and test data
+        validation_horizon: How far ahead to predict in backtesting
+        fiscal_year_start_month: Fiscal year start month
     
     Returns:
-        Dictionary with comprehensive validation results
+        Dictionary with validation results
     """
     results = {
         'product_name': product_name,
         'basic_validation': {},
         'enhanced_analysis': {},
         'seasonal_analysis': {},
-        'walk_forward_validation': None,
-        'cross_validation': None,
+        'backtesting_validation': None,
         'method_recommendation': None
     }
     
@@ -681,84 +781,33 @@ def comprehensive_validation_suite(actual, forecast, dates=None, product_name=""
             if diagnostic_messages:
                 diagnostic_messages.append(f"⚠️ Seasonal MAPE analysis failed for {product_name}: {str(e)[:50]}")
     
-    # Walk-forward validation
-    if enable_walk_forward and series is not None and model_fitting_func is not None:
+    # Simple backtesting validation
+    if series is not None and model_fitting_func is not None:
         try:
-            results['walk_forward_validation'] = walk_forward_validation(
-                series, model_fitting_func,
-                window_size=24,
-                step_size=1,
-                horizon=(validation_horizon or 12),
-                model_params=model_params,
-                diagnostic_messages=diagnostic_messages,
-                gap=max(0, backtest_gap)
+            results['backtesting_validation'] = simple_backtesting_validation(
+                series, model_fitting_func, backtest_months, backtest_gap, 
+                validation_horizon, model_params, diagnostic_messages
             )
         except Exception as e:
             if diagnostic_messages:
-                diagnostic_messages.append(f"⚠️ Walk-forward validation failed for {product_name}: {str(e)[:50]}")
+                diagnostic_messages.append(f"⚠️ Backtesting validation failed for {product_name}: {str(e)[:50]}")
     
-    # Cross-validation
-    if enable_cross_validation and series is not None and model_fitting_func is not None:
-        try:
-            results['cross_validation'] = time_series_cross_validation(
-                series, model_fitting_func,
-                n_splits=5,
-                horizon=(validation_horizon or 12),
-                model_params=model_params,
-                diagnostic_messages=diagnostic_messages,
-                gap=max(0, backtest_gap)
-            )
-        except Exception as e:
-            if diagnostic_messages:
-                diagnostic_messages.append(f"⚠️ Cross-validation failed for {product_name}: {str(e)[:50]}")
-    
-    # Recommend a backtesting method if both (or one) are available
+    # Method recommendation
     try:
-        wf = results.get('walk_forward_validation')
-        cv = results.get('cross_validation')
-        recommendation = {
-            'recommended': 'basic_only',
-            'reason': 'Insufficient data for advanced backtesting',
-            'scores': {}
-        }
-
-        def score(res, iterations_key):
-            if not res:
-                return None
-            mean_mape = float(res.get('mean_mape', np.nan))
-            std_mape = float(res.get('std_mape', np.nan))
-            n = int(res.get(iterations_key, 0))
-            if n <= 0 or not np.isfinite(mean_mape):
-                return None
-            stability = 1.0 / (1.0 + (std_mape / (mean_mape + 1e-9)))
-            return n * stability / (mean_mape + 1e-9)
-
-        wf_score = score(wf, 'iterations')
-        cv_score = score(cv, 'folds_completed')
-
-        if wf_score is not None:
-            recommendation['scores']['walk_forward'] = wf_score
-        if cv_score is not None:
-            recommendation['scores']['cross_validation'] = cv_score
-
-        if wf_score is None and cv_score is None:
-            pass  # keep basic_only
-        elif wf_score is not None and (cv_score is None or wf_score >= cv_score):
-            recommendation['recommended'] = 'walk_forward'
-            if wf:
-                recommendation['reason'] = (
-                    f"Walk-forward provides {wf.get('iterations', 0)} rolling windows with "
-                    f"mean MAPE {wf.get('mean_mape', float('nan')):.3f} and lower variability."
-                )
+        bt = results.get('backtesting_validation')
+        if bt and bt.get('success'):
+            results['method_recommendation'] = {
+                'recommended': 'backtesting',
+                'reason': f"Backtesting successful with {bt.get('mape', 0):.1%} MAPE over {bt.get('test_months', 0)} months",
+                'backtest_mape': bt.get('mape'),
+                'backtest_months': bt.get('backtest_period')
+            }
         else:
-            recommendation['recommended'] = 'cross_validation'
-            if cv:
-                recommendation['reason'] = (
-                    f"Cross-validation provides {cv.get('folds_completed', 0)} folds with "
-                    f"mean MAPE {cv.get('mean_mape', float('nan')):.3f} and better stability."
-                )
-
-        results['method_recommendation'] = recommendation
+            results['method_recommendation'] = {
+                'recommended': 'basic_only',
+                'reason': 'Backtesting failed or insufficient data - using basic validation only',
+                'fallback': True
+            }
     except Exception:
         # Non-fatal if recommendation fails
         pass

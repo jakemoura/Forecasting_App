@@ -281,6 +281,7 @@ def create_ets_fitting_function(seasonal_type="mul"):
     def fit_ets_model(train_data, **kwargs):
         """Fit ETS model to training data."""
         try:
+            # Try with seasonal first
             model = ExponentialSmoothing(
                 train_data, 
                 trend="add", 
@@ -289,6 +290,7 @@ def create_ets_fitting_function(seasonal_type="mul"):
             ).fit()
             return model
         except Exception as e:
+            error_msg = str(e).lower()
             # Fallback to additive if multiplicative fails
             if seasonal_type == "mul":
                 try:
@@ -301,6 +303,26 @@ def create_ets_fitting_function(seasonal_type="mul"):
                     return model
                 except Exception:
                     pass
+            # Final fallback: no seasonal
+            try:
+                model = ExponentialSmoothing(
+                    train_data, 
+                    trend="add", 
+                    seasonal=None
+                ).fit()
+                return model
+            except Exception:
+                pass
+            # If all else fails, try with minimal parameters
+            try:
+                model = ExponentialSmoothing(
+                    train_data, 
+                    trend=None, 
+                    seasonal=None
+                ).fit()
+                return model
+            except Exception:
+                pass
             raise e
     
     return fit_ets_model

@@ -64,7 +64,7 @@ from statsmodels.tsa.holtwinters import ExponentialSmoothing
 # model runner helpers (which operate outside the pipeline function scope)
 # can access the selective drift logic without threading many parameters.
 # ---------------------------------------------------------------------------
-DRIFT_CFG: dict[str, float | bool] = {
+DRIFT_CFG: dict = {
     "enable": False,
     "min_pct": 0.0,
     "max_pct": 0.0,
@@ -72,11 +72,11 @@ DRIFT_CFG: dict[str, float | bool] = {
     "hist_cv_min": 0.0,
 }
 
-_DRIFT_DIAGNOSTICS_REF: list[str] | None = None
-DRIFT_APPLIED_PRODUCTS: set[str] = set()
+_DRIFT_DIAGNOSTICS_REF: list = None
+DRIFT_APPLIED_PRODUCTS: set = set()
 
 
-def _maybe_apply_drift(series: pd.Series, forecast: np.ndarray | pd.Series, model_name: str, product: str):
+def _maybe_apply_drift(series: pd.Series, forecast, model_name: str, product: str):
     """Optionally apply gentle linear drift carry to overly flat forecasts.
 
     Uses global DRIFT_CFG set by run_forecasting_pipeline. Conditions:
@@ -140,11 +140,11 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
                             apply_business_adjustments=False, business_growth_assumption=0,
                             market_multiplier=1.0, market_conditions="Stable",
                             enable_business_aware_selection=False, enable_prophet_holidays=False,
-                            enable_advanced_validation=False, enable_walk_forward=False, 
-                            enable_cross_validation=False,
+                            enable_backtesting=True,
                             use_backtesting_selection: bool = False,
-                            backtest_gap: int = 0,
-                            validation_horizon: int | None = None,
+                            backtest_months: int = 12,
+                            backtest_gap: int = 1,
+                            validation_horizon: int = 12,
                             fiscal_year_start_month: int = 1,
                             enable_per_product_drift: bool = True,
                             drift_min_pct: float = 0.005,
@@ -165,9 +165,8 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
         market_conditions: Market conditions description
         enable_business_aware_selection: Whether to use business-aware model selection
         enable_prophet_holidays: Whether to include holidays in Prophet
-        enable_advanced_validation: Whether to run enhanced validation analysis
-        enable_walk_forward: Whether to run walk-forward validation
-    enable_cross_validation: Whether to run cross-validation
+        enable_backtesting: Whether to run backtesting validation analysis
+                # Note: Walk-forward and cross-validation removed in favor of simple backtesting
     use_backtesting_selection: If True, override per-product selection using backtesting diagnostics
     enable_per_product_drift: If True, apply gentle drift carry only on products whose model forecast is excessively flat.
     drift_min_pct / drift_max_pct: Monthly pct slope bounds (relative to recent mean) for applying drift.
@@ -194,7 +193,7 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
     smapes, mases, rmses = {}, {}, {}
     diagnostic_messages = []
     products = raw_data["Product"].unique()
-    advanced_validation_results = {}  # New: Store advanced validation results
+    backtesting_results = {}  # Store backtesting validation results
     
     # Prepare data
     try:
@@ -260,10 +259,9 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
             sarima_params, diagnostic_messages, horizon,
             enable_statistical_validation, apply_business_adjustments,
             business_growth_assumption, market_multiplier, market_conditions,
-            enable_prophet_holidays, enable_advanced_validation, enable_walk_forward,
-            enable_cross_validation, backtest_gap, validation_horizon,
+            enable_prophet_holidays, enable_backtesting, backtest_months, backtest_gap, validation_horizon,
             fiscal_year_start_month,
-            advanced_validation_results, prog, done, total
+            backtesting_results, prog, done, total
         )
     
     prog.empty()
@@ -284,13 +282,13 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
     best_models_per_product_standard = dict(best_models_per_product)
     best_mapes_per_product_standard = dict(best_mapes_per_product)
 
-    # Compute a BACKTESTING-driven selection alternative when advanced results exist
+    # Compute a BACKTESTING-driven selection alternative when backtesting results exist
     best_models_per_product_backtesting: dict[str, str] = {}
     best_mapes_per_product_backtesting: dict[str, float] = {}
-    if advanced_validation_results:
+    if backtesting_results:
         for product in list(best_models_per_product_standard.keys()):
-            per_model = advanced_validation_results.get(product, {})
-            # Score each model by basic MAPE from advanced validation
+            per_model = backtesting_results.get(product, {})
+            # Score each model by basic MAPE from backtesting validation
             def score_validation(v):
                 if not v:
                     return np.inf
@@ -408,7 +406,7 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
     
     return (results, avg_mapes, sarima_params, diagnostic_messages,
             {'smapes': avg_smapes, 'mases': avg_mases, 'rmses': avg_rmses},
-            best_models_per_product, best_mapes_per_product, advanced_validation_results)
+            best_models_per_product, best_mapes_per_product, backtesting_results)
 
 
 def _get_valid_products(raw_data, diagnostic_messages):
@@ -476,10 +474,9 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
                            sarima_params, diagnostic_messages, horizon,
                            enable_statistical_validation, apply_business_adjustments,
                            business_growth_assumption, market_multiplier, market_conditions,
-                           enable_prophet_holidays, enable_advanced_validation, enable_walk_forward,
-                           enable_cross_validation, backtest_gap, validation_horizon,
+                           enable_prophet_holidays, enable_backtesting, backtest_months, backtest_gap, validation_horizon,
                            fiscal_year_start_month,
-                           advanced_validation_results, prog, done, total):
+                           backtesting_results, prog, done, total):
     """Run all selected models for a single product."""
     
     seasonality_strength = detect_seasonality_strength(series)
@@ -490,8 +487,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
             sarima_params, diagnostic_messages, seasonality_strength, enable_statistical_validation,
             apply_business_adjustments, business_growth_assumption, market_multiplier, market_conditions,
-            enable_advanced_validation, enable_walk_forward, enable_cross_validation, backtest_gap,
-            validation_horizon, fiscal_year_start_month, advanced_validation_results, prog, done, total
+            enable_backtesting, backtest_months, backtest_gap,
+            validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total
         )
     
     # ETS model
@@ -499,8 +496,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
         done = _run_ets_model(
             product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
             diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
-            business_growth_assumption, market_multiplier, enable_advanced_validation,
-            enable_walk_forward, enable_cross_validation, backtest_gap, validation_horizon, fiscal_year_start_month, advanced_validation_results,
+            business_growth_assumption, market_multiplier, enable_backtesting,
+            backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results,
             prog, done, total
         )
     
@@ -512,8 +509,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
                 product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
                 diagnostic_messages, poly_degree, apply_business_adjustments,
                 business_growth_assumption, market_multiplier,
-                enable_advanced_validation, enable_walk_forward, enable_cross_validation,
-                backtest_gap, validation_horizon, fiscal_year_start_month, advanced_validation_results, prog, done, total
+                enable_backtesting,
+                backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total
             )
     
     # Prophet model
@@ -522,8 +519,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
             diagnostic_messages, enable_prophet_holidays, enable_statistical_validation,
             apply_business_adjustments, business_growth_assumption, market_multiplier,
-            enable_advanced_validation, enable_walk_forward, enable_cross_validation,
-            backtest_gap, validation_horizon, fiscal_year_start_month, advanced_validation_results, prog, done, total
+            enable_backtesting,
+            backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total
         )
     
     # Auto-ARIMA model
@@ -532,8 +529,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
             diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
             business_growth_assumption, market_multiplier,
-            enable_advanced_validation, enable_walk_forward, enable_cross_validation,
-            backtest_gap, validation_horizon, fiscal_year_start_month, advanced_validation_results, prog, done, total
+            enable_backtesting,
+            backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total
         )
     
     # LightGBM model
@@ -542,8 +539,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
             diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
             business_growth_assumption, market_multiplier,
-            enable_advanced_validation, enable_walk_forward, enable_cross_validation,
-            backtest_gap, validation_horizon, fiscal_year_start_month, advanced_validation_results, prog, done, total
+            enable_backtesting,
+            backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total
         )
     
     return done
@@ -552,9 +549,9 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
 def _run_sarima_model(product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
                      sarima_params, diagnostic_messages, seasonality_strength, enable_statistical_validation,
                      apply_business_adjustments, business_growth_assumption, market_multiplier, market_conditions,
-                     enable_advanced_validation, enable_walk_forward, enable_cross_validation, backtest_gap, validation_horizon,
+                     enable_backtesting, backtest_months, backtest_gap, validation_horizon,
                      fiscal_year_start_month,
-                     advanced_validation_results, prog, done, total):
+                     backtesting_results, prog, done, total):
     """Run SARIMA model for a product."""
     try:
         # Find best SARIMA parameters
@@ -612,7 +609,7 @@ def _run_sarima_model(product, series, train, val, future_idx, act_df, results, 
                         pf = final_model.forecast(len(future_idx))  # type: ignore
                     else:
                         # Fallback prediction method
-                        pf = final_model.predict(n_periods=len(future_idx))  # type: ignore
+                        pf = final_model.predict(n_periods=int(len(future_idx)))  # type: ignore
                 except (AttributeError, TypeError) as e:
                     diagnostic_messages.append(f"❌ SARIMA Product {product}: Forecast generation failed - {str(e)}")
                     _add_failed_metrics("SARIMA", mapes, smapes, mases, rmses)
@@ -635,30 +632,33 @@ def _run_sarima_model(product, series, train, val, future_idx, act_df, results, 
                 
                 diagnostic_messages.append(f"✅ SARIMA Product {product}: Order {order}, Seasonal {seasonal_order}, {selection_criterion}: {criterion_value:.1f}, MAPE {best_validation_mape:.1%}")
 
-                # Advanced validation diagnostics for SARIMA
-                if enable_advanced_validation and pv_val is not None:
+                # Backtesting diagnostics for SARIMA
+                if enable_backtesting and pv_val is not None:
                     try:
-                        sarima_fit_fn = create_sarima_fitting_function(order=order, seasonal_order=seasonal_order)
-                        validation_results = comprehensive_validation_suite(
-                            actual=val.values,
-                            forecast=pv_val,
-                            dates=val.index,
-                            product_name=product,
-                            enable_walk_forward=enable_walk_forward,
-                            enable_cross_validation=enable_cross_validation,
-                            series=series,
-                            model_fitting_func=sarima_fit_fn,
-                            model_params={},
-                            diagnostic_messages=diagnostic_messages,
-                            backtest_gap=int(max(0, backtest_gap)),
-                            validation_horizon=int(validation_horizon) if validation_horizon is not None else None,
-                            fiscal_year_start_month=int(fiscal_year_start_month)
-                        )
-                        if product not in advanced_validation_results:
-                            advanced_validation_results[product] = {}
-                        advanced_validation_results[product]["SARIMA"] = validation_results
+                        # Check if we have enough data for backtesting
+                        if len(series) < (backtest_months + validation_horizon + backtest_gap + 12):
+                            diagnostic_messages.append(f"⚠️ SARIMA backtesting skipped for {product}: insufficient data for {backtest_months} month backtesting")
+                        else:
+                            sarima_fit_fn = create_sarima_fitting_function(order=order, seasonal_order=seasonal_order)
+                            validation_results = comprehensive_validation_suite(
+                                actual=val.values,
+                                forecast=pv_val,
+                                dates=val.index,
+                                product_name=product,
+                                series=series,
+                                model_fitting_func=sarima_fit_fn,
+                                model_params={},
+                                diagnostic_messages=diagnostic_messages,
+                                backtest_months=backtest_months,
+                                backtest_gap=backtest_gap,
+                                validation_horizon=validation_horizon,
+                                fiscal_year_start_month=fiscal_year_start_month
+                            )
+                            if product not in backtesting_results:
+                                backtesting_results[product] = {}
+                            backtesting_results[product]["SARIMA"] = validation_results
                     except Exception as e:
-                        diagnostic_messages.append(f"⚠️ SARIMA Advanced validation failed for {product}: {str(e)[:50]}")
+                        diagnostic_messages.append(f"⚠️ SARIMA Backtesting failed for {product}: {str(e)[:50]}")
             else:
                 diagnostic_messages.append(f"❌ SARIMA Product {product}: Final model training failed")
                 _add_failed_metrics("SARIMA", mapes, smapes, mases, rmses)
@@ -677,8 +677,8 @@ def _run_sarima_model(product, series, train, val, future_idx, act_df, results, 
 
 def _run_ets_model(product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
                   diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
-                  business_growth_assumption, market_multiplier, enable_advanced_validation, 
-                  enable_walk_forward, enable_cross_validation, backtest_gap, validation_horizon, fiscal_year_start_month, advanced_validation_results, 
+                  business_growth_assumption, market_multiplier, enable_backtesting, 
+                  backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, 
                   prog, done, total):
     """Run ETS model for a product."""
     try:
@@ -714,29 +714,33 @@ def _run_ets_model(product, series, train, val, future_idx, act_df, results, map
             pf = apply_statistical_validation(pf, series, "ETS")
         if apply_business_adjustments:
             pf = apply_business_adjustments_to_forecast(pf, business_growth_assumption, market_multiplier)
-        # Advanced validation to compute diagnostics (no forecast adjustments)
-        if enable_advanced_validation:
+        # Backtesting to compute diagnostics (no forecast adjustments)
+        if enable_backtesting:
             try:
-                ets_fitting_func = create_ets_fitting_function(seasonal_type)
-                validation_results = comprehensive_validation_suite(
-                    actual=val.values,
-                    forecast=pv,
-                    dates=val.index,
-                    product_name=product,
-                    enable_walk_forward=enable_walk_forward,
-                    enable_cross_validation=enable_cross_validation,
-                    series=series,
-                    model_fitting_func=ets_fitting_func,
-                    model_params={},
-                    diagnostic_messages=diagnostic_messages,
-                    backtest_gap=int(max(0, backtest_gap)),
-                    validation_horizon=int(validation_horizon) if validation_horizon is not None else None
-                )
-                if product not in advanced_validation_results:
-                    advanced_validation_results[product] = {}
-                advanced_validation_results[product]["ETS"] = validation_results
+                # Check if we have enough data for backtesting
+                if len(series) < (backtest_months + validation_horizon + backtest_gap + 12):
+                    diagnostic_messages.append(f"⚠️ ETS backtesting skipped for {product}: insufficient data for {backtest_months} month backtesting")
+                else:
+                    ets_fitting_func = create_ets_fitting_function(seasonal_type)
+                    validation_results = comprehensive_validation_suite(
+                        actual=val.values,
+                        forecast=pv,
+                        dates=val.index,
+                        product_name=product,
+                        series=series,
+                        model_fitting_func=ets_fitting_func,
+                        model_params={},
+                        diagnostic_messages=diagnostic_messages,
+                        backtest_months=backtest_months,
+                        backtest_gap=backtest_gap,
+                        validation_horizon=validation_horizon,
+                        fiscal_year_start_month=fiscal_year_start_month
+                    )
+                    if product not in backtesting_results:
+                        backtesting_results[product] = {}
+                    backtesting_results[product]["ETS"] = validation_results
             except Exception as e:
-                diagnostic_messages.append(f"⚠️ ETS Advanced validation failed for {product}: {str(e)[:50]}")
+                diagnostic_messages.append(f"⚠️ ETS Backtesting failed for {product}: {str(e)[:50]}")
         # Store results after any corrections
         fore_df = pd.DataFrame({"Product": product, "Date": future_idx, "ACR": pf, "Type": "forecast"})
         results["ETS"].append(pd.concat([act_df, fore_df], ignore_index=True))
@@ -752,8 +756,8 @@ def _run_ets_model(product, series, train, val, future_idx, act_df, results, map
 def _run_polynomial_model(product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
                          diagnostic_messages, degree, apply_business_adjustments,
                          business_growth_assumption, market_multiplier,
-                         enable_advanced_validation, enable_walk_forward, enable_cross_validation,
-                          backtest_gap, validation_horizon, fiscal_year_start_month, advanced_validation_results, prog, done, total):
+                         enable_backtesting,
+                         backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total):
     """Run polynomial regression model for a product."""
     model_name = f"Poly-{degree}"
     
@@ -804,30 +808,34 @@ def _run_polynomial_model(product, series, train, val, future_idx, act_df, resul
             
             diagnostic_messages.append(f"✅ {model_name} Product {product}: MAPE {val_mape:.1%} (pure polynomial)")
 
-            # Advanced validation diagnostics for Polynomial
-            if enable_advanced_validation:
+            # Backtesting diagnostics for Polynomial
+            if enable_backtesting:
                 try:
-                    poly_fit_fn = create_polynomial_fitting_function(degree=degree)
-                    validation_results = comprehensive_validation_suite(
-                        actual=val.values,
-                        forecast=pv,
-                        dates=val.index,
-                        product_name=product,
-                        enable_walk_forward=enable_walk_forward,
-                        enable_cross_validation=enable_cross_validation,
-                        series=series,
-                        model_fitting_func=poly_fit_fn,
-                        model_params={},
-                        diagnostic_messages=diagnostic_messages,
-                        backtest_gap=int(max(0, backtest_gap)),
-                        validation_horizon=int(validation_horizon) if validation_horizon is not None else None,
-                        fiscal_year_start_month=int(fiscal_year_start_month)
-                    )
-                    if product not in advanced_validation_results:
-                        advanced_validation_results[product] = {}
-                    advanced_validation_results[product][model_name] = validation_results
+                    # Check if we have enough data for backtesting
+                    if len(series) < (backtest_months + validation_horizon + backtest_gap + 12):
+                        diagnostic_messages.append(f"⚠️ {model_name} backtesting skipped for {product}: insufficient data for {backtest_months} month backtesting")
+                    else:
+                        poly_fit_fn = create_polynomial_fitting_function(degree=degree)
+                        validation_results = comprehensive_validation_suite(
+                            actual=val.values,
+                            forecast=pv,
+                            dates=val.index,
+                            product_name=product,
+                            # Simple backtesting only
+                            series=series,
+                            model_fitting_func=poly_fit_fn,
+                            model_params={},
+                            diagnostic_messages=diagnostic_messages,
+                            backtest_months=backtest_months,
+                            backtest_gap=backtest_gap,
+                            validation_horizon=validation_horizon,
+                            fiscal_year_start_month=fiscal_year_start_month
+                        )
+                        if product not in backtesting_results:
+                            backtesting_results[product] = {}
+                        backtesting_results[product][model_name] = validation_results
                 except Exception as e:
-                    diagnostic_messages.append(f"⚠️ {model_name} Advanced validation failed for {product}: {str(e)[:50]}")
+                    diagnostic_messages.append(f"⚠️ {model_name} Backtesting failed for {product}: {str(e)[:50]}")
         else:
             diagnostic_messages.append(f"❌ {model_name} Product {product}: Poor fit (MAPE {val_mape:.1%}), skipping")
             _add_failed_metrics(model_name, mapes, smapes, mases, rmses)
@@ -844,8 +852,8 @@ def _run_polynomial_model(product, series, train, val, future_idx, act_df, resul
 def _run_prophet_model(product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
                       diagnostic_messages, enable_prophet_holidays, enable_statistical_validation,
                       apply_business_adjustments, business_growth_assumption, market_multiplier,
-                      enable_advanced_validation, enable_walk_forward, enable_cross_validation,
-                      backtest_gap, validation_horizon, fiscal_year_start_month, advanced_validation_results, prog, done, total):
+                      enable_backtesting,
+                      backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total):
     """Run Prophet model for a product."""
     try:
         # Setup holidays if enabled
@@ -922,30 +930,39 @@ def _run_prophet_model(product, series, train, val, future_idx, act_df, results,
         holiday_status = "with holidays" if enable_prophet_holidays and holidays_df is not None else "no holidays"
         diagnostic_messages.append(f"✅ Prophet Product {product}: MAPE {val_mape:.1%} ({holiday_status})")
 
-        # Advanced validation diagnostics for Prophet
-        if enable_advanced_validation:
+        # Backtesting diagnostics for Prophet
+        if enable_backtesting and HAVE_PROPHET:
             try:
-                prophet_fit_fn = create_prophet_fitting_function(enable_holidays=bool(holidays_df is not None))
-                validation_results = comprehensive_validation_suite(
-                    actual=val.values,
-                    forecast=pv,
-                    dates=val.index,
-                    product_name=product,
-                    enable_walk_forward=enable_walk_forward,
-                    enable_cross_validation=enable_cross_validation,
-                    series=series,
-                    model_fitting_func=prophet_fit_fn,
-                    model_params={},
-                    diagnostic_messages=diagnostic_messages,
-                    backtest_gap=int(max(0, backtest_gap)),
-                    validation_horizon=int(validation_horizon) if validation_horizon is not None else None,
-                    fiscal_year_start_month=int(fiscal_year_start_month)
-                )
-                if product not in advanced_validation_results:
-                    advanced_validation_results[product] = {}
-                advanced_validation_results[product]["Prophet"] = validation_results
+                # Check if we have enough data for backtesting
+                if len(series) < (backtest_months + validation_horizon + backtest_gap + 12):
+                    diagnostic_messages.append(f"⚠️ Prophet backtesting skipped for {product}: insufficient data for {backtest_months} month backtesting")
+                else:
+                    prophet_fit_fn = create_prophet_fitting_function(enable_holidays=bool(holidays_df is not None))
+                    validation_results = comprehensive_validation_suite(
+                        actual=val.values,
+                        forecast=pv,
+                        dates=val.index,
+                        product_name=product,
+                        series=series,
+                        model_fitting_func=prophet_fit_fn,
+                        model_params={},
+                        diagnostic_messages=diagnostic_messages,
+                        backtest_months=backtest_months,
+                        backtest_gap=backtest_gap,
+                        validation_horizon=validation_horizon,
+                        fiscal_year_start_month=fiscal_year_start_month
+                    )
+                    if product not in backtesting_results:
+                        backtesting_results[product] = {}
+                    backtesting_results[product]["Prophet"] = validation_results
             except Exception as e:
-                diagnostic_messages.append(f"⚠️ Prophet Advanced validation failed for {product}: {str(e)[:50]}")
+                error_msg = str(e)[:50]
+                if "prophet not available" in error_msg.lower():
+                    diagnostic_messages.append(f"⚠️ Prophet backtesting skipped for {product}: Prophet package not available")
+                else:
+                    diagnostic_messages.append(f"⚠️ Prophet Backtesting failed for {product}: {error_msg}")
+        elif enable_backtesting and not HAVE_PROPHET:
+            diagnostic_messages.append(f"⚠️ Prophet backtesting skipped for {product}: Prophet package not available")
         
     except Exception as e:
         diagnostic_messages.append(f"❌ Prophet Product {product}: {str(e)[:50]}")
@@ -959,8 +976,8 @@ def _run_prophet_model(product, series, train, val, future_idx, act_df, results,
 def _run_auto_arima_model(product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
                          diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
                          business_growth_assumption, market_multiplier,
-                         enable_advanced_validation, enable_walk_forward, enable_cross_validation,
-                         backtest_gap, validation_horizon, fiscal_year_start_month, advanced_validation_results, prog, done, total):
+                         enable_backtesting,
+                         backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total):
     """Run Auto-ARIMA model for a product."""
     try:
         # Check if auto_arima is available
@@ -1026,31 +1043,35 @@ def _run_auto_arima_model(product, series, train, val, future_idx, act_df, resul
             f"✅ Auto-ARIMA Product {product}: Order {model_order}, Seasonal {seasonal_order}, MAPE {val_mape:.1%}"
         )
 
-        # Advanced validation diagnostics for Auto-ARIMA
-        if enable_advanced_validation:
+        # Backtesting diagnostics for Auto-ARIMA
+        if enable_backtesting:
             try:
-                aa_fit_fn = create_auto_arima_fitting_function()
-                validation_results = comprehensive_validation_suite(
-                    actual=val.values,
-                    forecast=pv,
-                    dates=val.index,
-                    product_name=product,
-                    enable_walk_forward=enable_walk_forward,
-                    enable_cross_validation=enable_cross_validation,
-                    series=series,
-                    model_fitting_func=aa_fit_fn,
-                    model_params={},
-                    diagnostic_messages=diagnostic_messages,
-                    backtest_gap=int(max(0, backtest_gap)),
-                    validation_horizon=int(validation_horizon) if validation_horizon is not None else None,
-                    fiscal_year_start_month=int(fiscal_year_start_month)
-                )
-                if product not in advanced_validation_results:
-                    advanced_validation_results[product] = {}
-                advanced_validation_results[product]["Auto-ARIMA"] = validation_results
+                # Check if we have enough data for backtesting
+                if len(series) < (backtest_months + validation_horizon + backtest_gap + 12):
+                    diagnostic_messages.append(f"⚠️ Auto-ARIMA backtesting skipped for {product}: insufficient data for {backtest_months} month backtesting")
+                else:
+                    aa_fit_fn = create_auto_arima_fitting_function()
+                    validation_results = comprehensive_validation_suite(
+                        actual=val.values,
+                        forecast=pv,
+                        dates=val.index,
+                        product_name=product,
+                        # Simple backtesting only
+                        series=series,
+                        model_fitting_func=aa_fit_fn,
+                        model_params={},
+                        diagnostic_messages=diagnostic_messages,
+                        backtest_months=backtest_months,
+                        backtest_gap=backtest_gap,
+                        validation_horizon=validation_horizon,
+                        fiscal_year_start_month=fiscal_year_start_month
+                    )
+                    if product not in backtesting_results:
+                        backtesting_results[product] = {}
+                    backtesting_results[product]["Auto-ARIMA"] = validation_results
             except Exception as e:
                 diagnostic_messages.append(
-                    f"⚠️ Auto-ARIMA Advanced validation failed for {product}: {str(e)[:50]}"
+                    f"⚠️ Auto-ARIMA Backtesting failed for {product}: {str(e)[:50]}"
                 )
 
     except Exception as e:
@@ -1065,8 +1086,8 @@ def _run_auto_arima_model(product, series, train, val, future_idx, act_df, resul
 def _run_lightgbm_model(product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
                        diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
                        business_growth_assumption, market_multiplier,
-                       enable_advanced_validation, enable_walk_forward, enable_cross_validation,
-                       backtest_gap, validation_horizon, fiscal_year_start_month, advanced_validation_results, prog, done, total):
+                       enable_backtesting,
+                       backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total):
     """Run LightGBM model for a product."""
     try:
         # Leak-safe LightGBM fitting (uses new signature)
@@ -1140,31 +1161,35 @@ def _run_lightgbm_model(product, series, train, val, future_idx, act_df, results
                     results["LightGBM"].append(pd.concat([act_df, fore_df], ignore_index=True))
                     diagnostic_messages.append(f"✅ LightGBM Product {product}: MAPE {best_mape:.1%} (leak-safe)")
 
-                    if enable_advanced_validation and val_forecast is not None:
+                    if enable_backtesting and val_forecast is not None:
                         try:
-                            # Simple fitting function reusing leak-safe approach for backtests
-                            def lgbm_fit_fn(train_ts, **kwargs):
-                                return fit_best_lightgbm(train_ts.iloc[:-12], train_ts.iloc[-12:], None)[0] if len(train_ts) > 24 else None
-                            validation_results = comprehensive_validation_suite(
-                                actual=val.values,
-                                forecast=val_forecast,
-                                dates=val.index,
-                                product_name=product,
-                                enable_walk_forward=enable_walk_forward,
-                                enable_cross_validation=enable_cross_validation,
-                                series=series,
-                                model_fitting_func=None,  # For advanced we already have robust metrics; avoid recursion
-                                model_params={},
-                                diagnostic_messages=diagnostic_messages,
-                                backtest_gap=int(max(0, backtest_gap)),
-                                validation_horizon=int(validation_horizon) if validation_horizon is not None else None,
-                                fiscal_year_start_month=int(fiscal_year_start_month)
-                            )
-                            if product not in advanced_validation_results:
-                                advanced_validation_results[product] = {}
-                            advanced_validation_results[product]["LightGBM"] = validation_results
+                            # Check if we have enough data for backtesting
+                            if len(series) < (backtest_months + validation_horizon + backtest_gap + 12):
+                                diagnostic_messages.append(f"⚠️ LightGBM backtesting skipped for {product}: insufficient data for {backtest_months} month backtesting")
+                            else:
+                                # Simple fitting function reusing leak-safe approach for backtests
+                                def lgbm_fit_fn(train_ts, **kwargs):
+                                    return fit_best_lightgbm(train_ts.iloc[:-12], train_ts.iloc[-12:], None)[0] if len(train_ts) > 24 else None
+                                validation_results = comprehensive_validation_suite(
+                                    actual=val.values,
+                                    forecast=val_forecast,
+                                    dates=val.index,
+                                    product_name=product,
+                                    # Simple backtesting only
+                                    series=series,
+                                    model_fitting_func=None,  # For advanced we already have robust metrics; avoid recursion
+                                    model_params={},
+                                    diagnostic_messages=diagnostic_messages,
+                                    backtest_months=backtest_months,
+                                    backtest_gap=backtest_gap,
+                                    validation_horizon=validation_horizon,
+                                    fiscal_year_start_month=fiscal_year_start_month
+                                )
+                                if product not in backtesting_results:
+                                    backtesting_results[product] = {}
+                                backtesting_results[product]["LightGBM"] = validation_results
                         except Exception as e:
-                            diagnostic_messages.append(f"⚠️ LightGBM Advanced validation failed for {product}: {str(e)[:50]}")
+                            diagnostic_messages.append(f"⚠️ LightGBM Backtesting failed for {product}: {str(e)[:50]}")
                 else:
                     _add_failed_metrics("LightGBM", mapes, smapes, mases, rmses)
         

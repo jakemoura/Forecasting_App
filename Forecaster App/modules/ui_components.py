@@ -76,11 +76,11 @@ def display_advanced_validation_settings():
     return enable_advanced_validation, enable_walk_forward, enable_cross_validation
 
 
-def display_enhanced_mape_analysis(advanced_validation_results):
+def display_enhanced_mape_analysis(backtesting_results):
     """Clean enhanced MAPE summary (corruption removed)."""
     st.markdown("### Enhanced MAPE Breakdown")
     enhanced_rows = []
-    for product, models in (advanced_validation_results or {}).items():
+    for product, models in (backtesting_results or {}).items():
         for model, res in (models or {}).items():
             if isinstance(res, dict):
                 enh = res.get('enhanced_analysis')
@@ -113,14 +113,14 @@ def display_enhanced_mape_analysis(advanced_validation_results):
         pass
 
 
-def display_cross_validation_results(advanced_validation_results):
+def display_cross_validation_results(backtesting_results):
     """Display cross-validation results."""
     st.markdown("### Time Series Cross-Validation Results")
     st.markdown("Model stability across different time periods.")
     
     cv_results = []
     
-    for product, models in advanced_validation_results.items():
+    for product, models in backtesting_results.items():
         for model, results in models.items():
             if 'cross_validation' in results and results['cross_validation']:
                 cv = results['cross_validation']
@@ -165,7 +165,7 @@ def display_seasonal_performance_analysis(advanced_validation_results):
     
     seasonal_results = []
     
-    for product, models in advanced_validation_results.items():
+    for product, models in backtesting_results.items():
         for model, results in models.items():
             if 'seasonal_analysis' in results and results['seasonal_analysis']:
                 seasonal = results['seasonal_analysis']
@@ -219,51 +219,271 @@ def display_seasonal_performance_analysis(advanced_validation_results):
         st.info("No seasonal performance analysis results available.")
 
 
-def display_advanced_validation_results(advanced_validation_results):
-    """Simplified advanced validation hub (backtesting overview removed)."""
-    if not advanced_validation_results:
+def display_data_context_summary(debug_mode=False):
+    """Display enhanced data context summary with backtesting recommendations."""
+    data_context = st.session_state.get('data_context', {})
+    if not data_context:
         return
-    with st.expander("🔍 Advanced Validation (optional summary)", expanded=False):
-        # Basic table: best basic_validation MAPE per model/product
+    
+    # Display data context summary prominently (no expander needed)
+    st.markdown("#### 📊 **Data Analysis Summary**")
+    recommendations = data_context.get('backtesting_recommendations', {})
+    data_quality = data_context.get('data_quality_score', {})
+    
+    if recommendations:
+        # Display data quality status
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            status_icon = recommendations.get('icon', '📊')
+            status_title = recommendations.get('title', 'Data Analysis')
+            status_desc = recommendations.get('description', 'Analyzing data...')
+            
+            if recommendations.get('status') == 'limited':
+                st.warning(f"{status_icon} **{status_title}**: {status_desc}")
+            elif recommendations.get('status') == 'moderate':
+                st.info(f"{status_icon} **{status_title}**: {status_desc}")
+            elif recommendations.get('status') == 'good':
+                st.success(f"{status_icon} **{status_title}**: {status_desc}")
+            else:
+                st.success(f"{status_icon} **{status_title}**: {status_desc}")
+            
+            # Show recommendation message
+            st.markdown(f"💡 **Recommendation**: {recommendations.get('message', 'Use data-driven backtesting')}")
+            
+            # Show recommended backtesting range
+            recommended_range = recommendations.get('recommended_range', '6-24 months')
+            default_value = recommendations.get('default_value', 12)
+            st.info(f"🎯 **Recommended Backtesting**: {recommended_range} (default: {default_value} months)")
+        
+        with col2:
+            # Show data quality metrics
+            if data_quality and 'score' in data_quality:
+                score = data_quality['score']
+                grade = data_quality.get('grade', 'N/A')
+                
+                st.metric("Data Quality", f"{score}/100", f"Grade: {grade}")
+                
+                # Show consistency info
+                consistency = data_quality.get('consistency_ratio', 0)
+                if consistency > 0.8:
+                    st.success("✅ High Consistency")
+                elif consistency > 0.6:
+                    st.info("📊 Good Consistency")
+                else:
+                    st.warning("⚠️ Variable Consistency")
+    
+    # Show data summary table
+    st.markdown("#### 📈 **Data Summary**")
+    
+    summary_data = {
+        'Metric': [
+            'Total Products',
+            'Available Months (Min)',
+            'Available Months (Max)',
+            'Available Months (Avg)',
+            'Data Quality Score',
+            'Consistency Ratio'
+        ],
+        'Value': [
+            str(data_context.get('total_products', 0)),
+            str(data_context.get('min_months', 0)),
+            str(data_context.get('max_months', 0)),
+            str(data_context.get('avg_months', 0)),
+            f"{data_quality.get('score', 'N/A')}/100" if data_quality else 'N/A',
+            f"{data_quality.get('consistency_ratio', 0):.1%}" if data_quality else 'N/A'
+        ]
+    }
+    
+    df_summary = pd.DataFrame(summary_data)
+    st.dataframe(df_summary, hide_index=True, use_container_width=True)
+    
+    # Show backtesting strategy
+    if recommendations:
+        st.markdown("#### 🎯 **Backtesting Strategy**")
+        
+        # Show the actual calculated recommendation
+        status = recommendations.get('status', 'unknown')
+        icon = recommendations.get('icon', '📊')
+        title = recommendations.get('title', 'Data Analysis')
+        description = recommendations.get('description', '')
+        message = recommendations.get('message', '')
+        
+        # Highlight the current recommendation
+        st.success(f"{icon} **{title}**: {description}")
+        st.info(f"💡 **Strategy**: {message}")
+        
+        # Show the calculated backtesting range
+        recommended_range = recommendations.get('recommended_range', '6-24 months')
+        default_value = recommendations.get('default_value', 12)
+        min_value = recommendations.get('min_value', 6)
+        max_value = recommendations.get('max_value', 24)
+        
+        st.markdown(f"""
+        **🎯 Calculated Backtesting Range:**
+        - **Recommended**: {recommended_range}
+        - **Default Value**: {default_value} months
+        - **Slider Range**: {min_value} to {max_value} months
+        """)
+        
+        # Add refresh button after analysis results
+        st.markdown("---")
+        if st.button("🔄 **Refresh Sidebar**", key="refresh_sidebar_after_analysis", help="Click to update the sidebar with new recommendations"):
+            st.rerun()
+        
+        # Debug information (only show in debug mode)
+        if debug_mode:
+            st.markdown("---")
+            st.markdown("#### 🐛 **Debug Information**")
+            st.json({
+                "data_context": data_context,
+                "recommendations": recommendations,
+                "data_quality": data_quality
+            })
+        
+
+
+def display_backtesting_results(backtesting_results):
+    """Display comprehensive backtesting validation results with explanations."""
+    if not backtesting_results:
+        return
+    
+    with st.expander("🔍 **Backtesting Results & Validation**", expanded=False):
+        # Explain what backtesting is and how it works
+        st.markdown("#### 📚 **What is Backtesting?**")
+        st.info("""
+        **Backtesting** validates forecasting models by testing them on historical data they haven't seen during training. 
+        This gives you confidence that the models will perform well on future data.
+        
+        **How it works:**
+        1. **Training Period**: Models learn from older data
+        2. **Validation Period**: Models predict on recent historical data
+        3. **Performance Measurement**: Compare predictions to actual values using MAPE
+        4. **Model Selection**: Choose the best performing model per product
+        """)
+        
+        # Show backtesting configuration
+        st.markdown("#### ⚙️ **Backtesting Configuration**")
+        config_info = {
+            "Validation Method": "Simple Train/Test Split",
+            "Training Data": "Historical data excluding last X months",
+            "Test Period": "Last X months (as specified in sidebar)",
+            "Performance Metric": "MAPE (Mean Absolute Percentage Error)",
+            "Selection Strategy": "Best model per product based on backtesting MAPE"
+        }
+        
+        for key, value in config_info.items():
+            st.caption(f"**{key}**: {value}")
+        
+        # Summary table: backtesting MAPE per model/product
+        st.markdown("#### 📊 **Backtesting Performance Results**")
+        
         rows = []
-        for product, models in advanced_validation_results.items():
+        for product, models in backtesting_results.items():
             for model, res in models.items():
                 if not isinstance(res, dict):
                     continue
-                basic = res.get('basic_validation') or {}
-                mape = basic.get('mape')
-                if mape is not None and np.isfinite(mape):
-                    rows.append({'Product': product, 'Model': model, 'MAPE%': round(float(mape)*100,2)})
+                
+                # Get backtesting results
+                backtesting = res.get('backtesting_validation')
+                if backtesting and backtesting.get('success'):
+                    mape = backtesting.get('mape', 0)
+                    backtest_months = backtesting.get('backtest_period', 0)
+                    test_months = backtesting.get('test_months', 0)
+                    
+                    rows.append({
+                        'Product': product, 
+                        'Model': model, 
+                        'Backtest MAPE%': round(float(mape)*100, 2),
+                        'Backtest Period': f"{backtest_months} months",
+                        'Test Period': f"{test_months} months"
+                    })
+        
         if rows:
-            df = pd.DataFrame(rows).sort_values(['Product','MAPE%'])
+            # Sort by MAPE (best performance first)
+            df = pd.DataFrame(rows).sort_values(['Product', 'Backtest MAPE%'])
             st.dataframe(df, hide_index=True, use_container_width=True)
-            # Optional deeper tabs if user wants
-            if st.checkbox("Show detailed analyses", value=False):
+            
+            # Performance interpretation
+            st.markdown("#### 🎯 **Performance Interpretation**")
+            st.caption("""
+            **MAPE Guidelines:**
+            - **< 10%**: Excellent accuracy
+            - **10-20%**: Good accuracy  
+            - **20-30%**: Moderate accuracy
+            - **> 30%**: Poor accuracy (consider different model)
+            """)
+            
+            # Show backtesting insights
+            st.markdown("#### 📈 **Backtesting Insights**")
+            
+            # Calculate success rate
+            total_models = sum(len(models) for models in backtesting_results.values())
+            successful_backtests = len(rows)
+            success_rate = (successful_backtests / total_models) * 100 if total_models > 0 else 0
+            
+            if success_rate >= 80:
+                st.success(f"✅ **High Success Rate**: {success_rate:.1f}% of models successfully backtested")
+            elif success_rate >= 60:
+                st.info(f"📊 **Good Success Rate**: {success_rate:.1f}% of models successfully backtested")
+            else:
+                st.warning(f"⚠️ **Low Success Rate**: {success_rate:.1f}% of models successfully backtested")
+            
+            # Model selection explanation
+            st.markdown("#### 🏆 **Model Selection Process**")
+            st.info("""
+            **How models are selected:**
+            1. **Backtesting Performance**: Models ranked by MAPE on validation data
+            2. **Product-Specific Selection**: Best model chosen per product (not overall)
+            3. **Fallback Strategy**: If backtesting fails, falls back to basic MAPE rankings
+            4. **Hybrid Approach**: Combines backtesting results with MAPE rankings for robustness
+            """)
+            
+            # Show detailed results if user wants
+            if st.checkbox("Show detailed backtesting analysis", value=False):
                 tab_labels = []
                 sections = []
+                
+                # Enhanced MAPE analysis
                 tab_labels.append("Enhanced MAPE")
                 sections.append('enhanced')
-                if any('cross_validation' in (res or {}) for models in advanced_validation_results.values() for res in models.values() if isinstance(res, dict)):
-                    tab_labels.append("Cross-Validation")
-                    sections.append('cv')
-                if any('seasonal_analysis' in (res or {}) for models in advanced_validation_results.values() for res in models.values() if isinstance(res, dict)):
+                
+                # Seasonal analysis
+                if any('seasonal_analysis' in (res or {}) for models in backtesting_results.values() for res in models.values() if isinstance(res, dict)):
                     tab_labels.append("Seasonal")
                     sections.append('seasonal')
+                
                 tabs = st.tabs(tab_labels)
                 t_index = 0
+                
                 if 'enhanced' in sections:
                     with tabs[t_index]:
-                        display_enhanced_mape_analysis(advanced_validation_results)
+                        display_enhanced_mape_analysis(backtesting_results)
                     t_index += 1
-                if 'cv' in sections:
-                    with tabs[t_index]:
-                        display_cross_validation_results(advanced_validation_results)
-                    t_index += 1
+                
                 if 'seasonal' in sections:
                     with tabs[t_index]:
-                        display_seasonal_performance_analysis(advanced_validation_results)
+                        display_seasonal_performance_analysis(backtesting_results)
+                    t_index += 1
         else:
-            st.info("No basic validation metrics computed.")
+            st.warning("⚠️ **No successful backtesting results available**")
+            st.info("""
+            **Possible reasons:**
+            - Insufficient historical data for validation
+            - Models failed to converge during backtesting
+            - Data quality issues prevented validation
+            
+            **What happens next:**
+            The system automatically falls back to MAPE rankings from basic validation to ensure you still get model recommendations.
+            """)
+            
+            # Show fallback strategy
+            st.markdown("#### 🔄 **Fallback Strategy**")
+            st.success("""
+            **Automatic Fallback Activated:**
+            When backtesting fails, the system uses MAPE rankings from basic model validation. 
+            This ensures you always get reliable model recommendations, even with limited data.
+            """)
 
 
 def display_product_forecast(data, product, model_name, best_models_per_product=None, best_mapes_per_product=None):

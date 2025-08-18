@@ -165,49 +165,39 @@ def render_model_guide_tab():
     """)
 
     # Selection modes and backtesting guide
-    st.markdown("### 🧭 Backtesting & Selection Modes")
+    st.markdown("### 🧭 **Smart Backtesting & Model Selection**")
+    
     st.markdown("""
-        **Standard Selection (Weighted/Multi‑Metric):**
-        - Scores models using multiple metrics (MAPE, SMAPE, MASE, RMSE)
-        - Ranks each model per product across all four metrics and picks the best average rank
-        - With Business‑Aware Selection, polynomial fits (Poly‑2/3) are discouraged unless they significantly and consistently outperform seasonal models
-
-        **Backtesting Selection (Walk‑Forward / CV):**
-        - Validates models on past data by simulating real forecasting cycles
-        - Core method: Walk‑forward validation across rolling windows
-            - Parameters: number of windows (folds), forecast horizon, and optional leakage gap between train and test
-            - Outputs: iterations, mean MAPE, std dev MAPE, min/max MAPE, and a consistency indicator
-        - Time‑series cross‑validation may also be used when enabled
-        - Falls back to a single holdout split when data is insufficient for advanced methods
-
-    **Mix (per‑product blend):**
+    **Standard Selection (MAPE Rankings):**
+    - Uses validation metrics from train/test split
+    - Fast and reliable for most business cases
+    - Automatically applied to all models
+    
+    **Smart Backtesting:**
+    - Tests models on historical data you specify
+    - More months = more robust validation
+    - Automatically falls back to MAPE rankings if backtesting fails
+    
+    **Hybrid Selection:**
+    - Combines best of both approaches
     - For each product, compares Standard vs Backtesting MAPEs
-    - Chooses the lower‑MAPE method per product (hybridizing both approaches)
-    - Produces granular accuracy without re‑running models
-    - BestModel column still shows the underlying statistical model
-
-    **What the UI shows:**
-    - Executive summary with selected best overall method and confidence
-    - Toggle to view Standard, Backtesting, or Mix (blended) aggregate forecasts
-    - Per‑product table with totals, YoY, MoM, model, and drift indicator
+    - Chooses the lower MAPE method automatically
     """)
-
-    st.markdown("### 🔎 Backtesting details")
+    
+    st.markdown("### 🔎 **Backtesting Details**")
+    
     st.markdown("""
-        **Walk‑Forward Validation:**
-        - Splits history into multiple rolling train/test windows; trains on earlier months and tests the next horizon
-        - Optional gap avoids look‑ahead leakage for cleaner evaluation
-        - Summarizes error across windows to capture stability (mean/std/min/max MAPE)
-
-        **Time‑Series Cross‑Validation:**
-        - Uses chronological folds (no shuffling) and aggregates accuracy
-        - Useful when you have enough history for multiple non‑overlapping test segments
-
-        **Enhanced diagnostics (when enabled):**
-        - Bias, confidence intervals, seasonal patterns, and outlier counts complement MAPE
-
-    **Insufficient data handling:**
-    - If history is too short, the app uses a simple validation split and notes this in diagnostics
+    **How It Works:**
+    1. **Data Split**: Uses last X months (your choice) for testing
+    2. **Model Training**: Fits models on remaining historical data
+    3. **Validation**: Compares predictions to actual values
+    4. **Fallback**: If backtesting fails → uses MAPE rankings
+    
+    **Benefits:**
+    - **Data-Driven**: Recommendations based on your actual data volume
+    - **Smart Defaults**: Automatically suggests optimal backtesting periods
+    - **Reliable**: Never fails completely - always provides model rankings
+    - **Fast**: Simple validation vs complex academic methods
     """)
     
     # Models Section

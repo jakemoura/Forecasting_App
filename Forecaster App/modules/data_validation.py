@@ -65,6 +65,38 @@ def analyze_data_quality(raw_data):
     data_analysis = []
     overall_status = "good"
     
+    # Calculate overall data context for UI recommendations
+    all_series = []
+    for product, grp in raw_data.groupby("Product"):
+        try:
+            series = grp.set_index("Date")["ACR"].astype(float)
+            if not isinstance(series.index, pd.DatetimeIndex):
+                series.index = pd.to_datetime(series.index)
+            series.index = series.index.to_period("M").to_timestamp(how="start")
+            all_series.append(series)
+        except Exception:
+            continue
+    
+    # Store data context for UI recommendations
+    if all_series:
+        min_months = min(len(s) for s in all_series)
+        max_months = max(len(s) for s in all_series)
+        avg_months = int(np.mean([len(s) for s in all_series]))
+        
+        # Use the minimum available months as the conservative estimate
+        available_months = min_months
+        
+        # Enhanced data context with backtesting recommendations
+        st.session_state['data_context'] = {
+            'available_months': available_months,
+            'min_months': min_months,
+            'max_months': max_months,
+            'avg_months': avg_months,
+            'total_products': len(all_series),
+            'backtesting_recommendations': _get_backtesting_recommendations(min_months, max_months, avg_months),
+            'data_quality_score': _calculate_data_quality_score(available_months, min_months, max_months, len(all_series))
+        }
+    
     for product, grp in raw_data.groupby("Product"):
         try:
             series = grp.set_index("Date")["ACR"].astype(float)
@@ -108,6 +140,153 @@ def analyze_data_quality(raw_data):
     
     return data_analysis, overall_status
 
+
+def _get_backtesting_recommendations(min_months, max_months, avg_months):
+    """
+    Get smart backtesting recommendations based on data volume.
+    
+    Args:
+        min_months: Minimum months across all products
+        max_months: Maximum months across all products
+        avg_months: Average months across all products
+        
+    Returns:
+        dict: Backtesting recommendations
+    """
+    # Conservative approach: use minimum months as baseline
+    available_months = min_months
+    
+    if available_months < 12:
+        # Very limited data - can only do minimal backtesting
+        max_possible = max(6, available_months - 3)  # Leave at least 3 months for training
+        return {
+            'status': 'limited',
+            'icon': '⚠️',
+            'title': 'Limited Data',
+            'description': f'Only {available_months} months available',
+            'recommended_range': f'6-{max_possible} months',
+            'default_value': min(6, max_possible),
+            'min_value': 6,
+            'max_value': max_possible,
+            'message': f'Consider uploading more data for robust validation. Use 6-{max_possible} months backtesting or rely on MAPE rankings.',
+            'confidence': 'low'
+        }
+    elif available_months < 24:
+        # Moderate data - calculate safe backtesting range
+        max_possible = available_months - 4  # Leave at least 4 months for training + gap
+        safe_backtesting = min(18, max_possible)
+        return {
+            'status': 'moderate',
+            'icon': '📊',
+            'title': 'Moderate Data',
+            'description': f'{available_months} months available',
+            'recommended_range': f'6-{safe_backtesting} months',
+            'default_value': min(12, safe_backtesting),
+            'min_value': 6,
+            'max_value': safe_backtesting,
+            'message': f'Good for focused validation. Use 6-{safe_backtesting} months backtesting for balanced validation.',
+            'confidence': 'medium'
+        }
+    elif available_months < 48:
+        # Calculate what's actually possible for backtesting
+        # Need: training data + gap + test period
+        # Conservative: leave at least 12 months for training, 1 month gap
+        max_possible_backtesting = available_months - 13  # 12 training + 1 gap
+        
+        # For 36 months: max = 17, but be conservative and default to 12
+        if available_months == 36:
+            # With 36 months: need 12 training + 1 gap + X testing + 6 validation
+            # So max testing = 36 - 12 - 1 - 6 = 17 months
+            # But be conservative and cap at 12 months for safety
+            safe_backtesting = 12  # Allow up to 12 months (very safe)
+            default_value = 12     # Default to 12 months (very safe)
+        else:
+            safe_backtesting = min(18, max_possible_backtesting)
+            default_value = min(12, safe_backtesting)
+        
+        return {
+            'status': 'good',
+            'icon': '✅',
+            'title': 'Good Data',
+            'description': f'{available_months} months available',
+            'recommended_range': f'6-{safe_backtesting} months',
+            'default_value': default_value,
+            'min_value': 6,
+            'max_value': safe_backtesting,
+            'message': f'Excellent for robust validation. Use 6-{safe_backtesting} months backtesting for comprehensive validation.{" Default 12 months recommended for optimal training data." if available_months == 36 else ""}',
+            'confidence': 'high'
+        }
+    else:
+        return {
+            'status': 'excellent',
+            'icon': '🎯',
+            'title': 'Excellent Data',
+            'description': f'{available_months}+ months available',
+            'recommended_range': '18-24 months',
+            'default_value': 24,
+            'min_value': 6,
+            'max_value': 24,
+            'message': f'Maximum validation possible. Use 18-24 months backtesting for enterprise-grade validation.',
+            'confidence': 'very_high'
+        }
+
+def _calculate_data_quality_score(min_months, max_months, avg_months, total_products):
+    """
+    Calculate a data quality score for recommendations.
+    
+    Args:
+        min_months: Minimum months across all products
+        max_months: Maximum months across all products
+        avg_months: Average months across all products
+        total_products: Total number of products
+        
+    Returns:
+        dict: Data quality metrics
+    """
+    # Base score from minimum months (conservative approach)
+    base_score = min(100, (min_months / 48) * 100)
+    
+    # Consistency bonus (how uniform the data is across products)
+    consistency_bonus = 0
+    if max_months > 0:
+        consistency_ratio = min_months / max_months
+        if consistency_ratio > 0.8:
+            consistency_bonus = 20  # Very consistent
+        elif consistency_ratio > 0.6:
+            consistency_bonus = 10  # Moderately consistent
+        elif consistency_ratio > 0.4:
+            consistency_bonus = 5   # Somewhat consistent
+    
+    # Product diversity bonus
+    diversity_bonus = min(10, total_products * 2)
+    
+    total_score = min(100, base_score + consistency_bonus + diversity_bonus)
+    
+    return {
+        'score': int(total_score),
+        'base_score': int(base_score),
+        'consistency_bonus': consistency_bonus,
+        'diversity_bonus': diversity_bonus,
+        'grade': _get_grade(total_score),
+        'consistency_ratio': min_months / max_months if max_months > 0 else 0
+    }
+
+def _get_grade(score):
+    """Convert score to letter grade."""
+    if score >= 90:
+        return 'A+'
+    elif score >= 80:
+        return 'A'
+    elif score >= 70:
+        return 'B+'
+    elif score >= 60:
+        return 'B'
+    elif score >= 50:
+        return 'C+'
+    elif score >= 40:
+        return 'C'
+    else:
+        return 'D'
 
 def _get_data_status(months_count):
     """

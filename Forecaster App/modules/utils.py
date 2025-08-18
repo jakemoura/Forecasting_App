@@ -19,17 +19,35 @@ def read_any_excel(file_obj):
     try:
         # Try openpyxl first (most reliable for .xlsx)
         return pd.read_excel(file_obj, engine='openpyxl')
-    except Exception:
+    except Exception as e1:
         try:
             # Try xlrd for older .xls files
             return pd.read_excel(file_obj, engine='xlrd')
-        except Exception:
+        except Exception as e2:
             try:
                 # Try pyxlsb for .xlsb files
                 return pd.read_excel(file_obj, engine='pyxlsb')
-            except Exception:
-                # Last resort - let pandas decide
-                return pd.read_excel(file_obj)
+            except Exception as e3:
+                # Try with explicit engine specification based on file extension
+                try:
+                    # Get file info to determine format
+                    if hasattr(file_obj, 'name'):
+                        filename = file_obj.name.lower()
+                    else:
+                        filename = str(file_obj).lower()
+                    
+                    if filename.endswith('.xlsx'):
+                        return pd.read_excel(file_obj, engine='openpyxl')
+                    elif filename.endswith('.xls'):
+                        return pd.read_excel(file_obj, engine='xlrd')
+                    elif filename.endswith('.xlsb'):
+                        return pd.read_excel(file_obj, engine='pyxlsb')
+                    else:
+                        # Try openpyxl as final fallback (most compatible)
+                        return pd.read_excel(file_obj, engine='openpyxl')
+                except Exception as e4:
+                    # If all else fails, provide detailed error
+                    raise ValueError(f"Failed to read Excel file. Tried engines: openpyxl, xlrd, pyxlsb. Errors: {e1}, {e2}, {e3}, {e4}")
 
 
 def coerce_month_start(date_series):

@@ -31,7 +31,7 @@ from modules.business_logic import process_yearly_renewals, calculate_model_rank
 from modules.session_state import store_forecast_results, initialize_session_state_variables
 from modules.utils import read_any_excel
 from modules.models import HAVE_PMDARIMA, HAVE_PROPHET, HAVE_LGBM
-from modules.ui_components import display_advanced_validation_results
+from modules.ui_components import display_backtesting_results, display_data_context_summary
 
 
 def main():
@@ -80,20 +80,19 @@ def process_forecast(uploaded, config):
         config: Configuration dictionary from sidebar controls
     """
     try:
-        # Read and validate data
-        raw = read_any_excel(io.BytesIO(uploaded.read()))
-        validate_data_format(raw)
-
-        # Prepare data with error handling
-        try:
+        # Check if data analysis was already completed during upload
+        if st.session_state.get('data_analysis_complete') and 'processed_data' in st.session_state:
+            # Use the already processed data
+            raw = st.session_state['processed_data']
+            st.success("✅ **Using previously analyzed data**")
+        else:
+            # Fallback: Read and validate data (shouldn't happen normally)
+            st.warning("⚠️ **Re-analyzing data** - this shouldn't happen normally")
+            raw = read_any_excel(io.BytesIO(uploaded.read()))
+            validate_data_format(raw)
             raw = prepare_data(raw)
-        except ValueError as e:
-            display_date_format_error(str(e))
-            return
-
-        # Analyze data quality and display results
-        data_analysis, overall_status = analyze_data_quality(raw)
-        display_data_analysis_results(data_analysis, overall_status)
+        
+        st.markdown("---")
 
         # Get valid products for forecasting
         diagnostic_messages = []
@@ -103,10 +102,8 @@ def process_forecast(uploaded, config):
         valid_products = get_valid_products(raw, diagnostic_messages)
         products = raw["Product"].unique()
 
-        # Get advanced validation settings from sidebar config (single source of truth)
-        enable_advanced_validation = bool(config.get('enable_advanced_validation', False))
-        enable_walk_forward = bool(config.get('enable_walk_forward', False))
-        enable_cross_validation = bool(config.get('enable_cross_validation', False))
+        # Get backtesting settings from sidebar config
+        enable_backtesting = bool(config.get('enable_backtesting', True))
 
         # Run the forecasting pipeline
         pipeline_results = run_forecasting_pipeline(
@@ -120,16 +117,15 @@ def process_forecast(uploaded, config):
             market_conditions=config['market_conditions'],
             enable_business_aware_selection=config.get('enable_business_aware_selection', False),
             enable_prophet_holidays=config['enable_prophet_holidays'],
-            enable_advanced_validation=enable_advanced_validation,
-            enable_walk_forward=enable_walk_forward,
-            enable_cross_validation=enable_cross_validation,
+            enable_backtesting=enable_backtesting,
             use_backtesting_selection=False,
-            backtest_gap=int(config.get('backtest_gap', 0)),
+            backtest_months=int(config.get('backtest_months', 12)),
+            backtest_gap=int(config.get('backtest_gap', 1)),
             validation_horizon=int(config.get('validation_horizon', 12)),
             fiscal_year_start_month=int(config.get('fiscal_year_start_month', 1))
         )
 
-        # Unpack pipeline results (now includes advanced validation results)
+        # Unpack pipeline results (now includes backtesting results)
         (
             results,
             avg_mapes,
@@ -138,7 +134,7 @@ def process_forecast(uploaded, config):
             additional_metrics,
             best_models_per_product,
             best_mapes_per_product,
-            advanced_validation_results,
+            backtesting_results,
         ) = pipeline_results
 
         # Merge diagnostic messages
@@ -211,8 +207,8 @@ def process_forecast(uploaded, config):
         except Exception:
             pass
 
-        # Persist advanced validation results for display after rerun
-        st.session_state.advanced_validation_results = advanced_validation_results if advanced_validation_results else {}
+        # Persist backtesting results for display after rerun
+        st.session_state.backtesting_results = backtesting_results if backtesting_results else {}
 
         # Refresh page to show results
         st.rerun()

@@ -7,6 +7,7 @@ and main interface layout elements.
 
 import streamlit as st
 import pandas as pd
+import io
 from .models import HAVE_PMDARIMA, HAVE_PROPHET, HAVE_LGBM
 
 
@@ -31,10 +32,25 @@ def setup_page_config():
 
 def create_sidebar_controls():
     """Create and return all sidebar control values."""
+    # Check if sidebar should update
+    sidebar_update_trigger = st.session_state.get('sidebar_update_trigger', False)
+    analysis_complete = st.session_state.get('data_analysis_complete', False)
+    data_context = st.session_state.get('data_context', {})
+    
+    # Use a unique key that changes when sidebar should update
+    # Force re-render when data context changes
+    data_context_str = str(data_context.get('min_months', 0)) + str(data_context.get('max_months', 0)) + str(analysis_complete)
+    sidebar_key = f"sidebar_{data_context_str}_{analysis_complete}"
+    
+    # Debug mode toggle
+    debug_mode = st.sidebar.checkbox("🐛 Debug Mode", key="debug_mode")
+    if debug_mode:
+        st.sidebar.caption("Debug mode enabled - check for detailed info")
+    
     st.sidebar.markdown("---")
     
     # Forecast settings
-    with st.sidebar.container():
+    with st.sidebar.container(key=sidebar_key):
         st.markdown("### 📈 **Forecast Settings**")
         horizon = st.number_input("📅 Months to forecast", 6, 120, 12, 3)
         
@@ -76,7 +92,7 @@ def create_sidebar_controls():
     business_config = create_business_adjustments_section()
 
     # Accuracy & Validation (separate, auto-opened)
-    accuracy_validation_config = create_accuracy_validation_section()
+    accuracy_validation_config = create_accuracy_validation_section(debug_mode)
     
     # Advanced controls
     advanced_config = create_advanced_options_section()
@@ -162,49 +178,102 @@ def create_business_adjustments_section():
     }
 
 
-def create_accuracy_validation_section():
-    """Create Accuracy & Validation controls in a separate expander and return configuration."""
+def create_accuracy_validation_section(debug_mode=False):
+    """Create Accuracy & Validation controls with smart backtesting recommendations."""
     with st.sidebar.expander("🎯 **Accuracy & Validation**", expanded=True):
-        st.caption("Advanced validation is always applied to double‑check accuracy with past data. This takes longer but improves confidence.")
-        improve_accuracy = True  # Always enabled
-
-        method_label = st.selectbox(
-            "Validation method",
-            ["Automatic (recommended)", "Walk‑forward", "Cross‑validation"],
-            index=0,
-            help=(
-                "Automatic picks the most reliable signal from walk‑forward and cross‑validation. "
-                "Walk‑forward simulates forecasting month‑by‑month (real‑world behavior). "
-                "Cross‑validation checks multiple time splits for stability across eras."
-            )
+        st.caption("Smart backtesting validates models against historical data for better accuracy. More months = more robust validation.")
+        
+        # Get enhanced data context for smart recommendations
+        data_context = st.session_state.get('data_context', {})
+        recommendations = data_context.get('backtesting_recommendations', {})
+        data_quality = data_context.get('data_quality_score', {})
+        
+        # Check if data analysis is complete
+        analysis_complete = st.session_state.get('data_analysis_complete', False)
+        
+        # Debug: Show what we're getting
+        if debug_mode:
+            st.caption(f"🔍 Debug: data_context keys: {list(data_context.keys()) if data_context else 'None'}")
+            st.caption(f"🔍 Debug: recommendations: {recommendations}")
+            st.caption(f"🔍 Debug: analysis_complete: {analysis_complete}")
+        
+        # Smart backtesting slider with data-driven recommendations
+        st.markdown("#### 📊 **Backtesting Period**")
+        st.markdown("")  # Add spacing
+        
+        if analysis_complete and recommendations:
+            # Use data-driven recommendations
+            min_value = recommendations.get('min_value', 6)
+            max_value = recommendations.get('max_value', 24)
+            default_value = recommendations.get('default_value', 12)
+            
+            # Clean, compact data quality status
+            status_icon = recommendations.get('icon', '📊')
+            status_title = recommendations.get('title', 'Data Analysis')
+            status_desc = recommendations.get('description', 'Analyzing data...')
+            
+            if recommendations.get('status') == 'limited':
+                st.warning(f"{status_icon} **{status_title}**: {status_desc}")
+            elif recommendations.get('status') == 'moderate':
+                st.info(f"{status_icon} **{status_title}**: {status_desc}")
+            elif recommendations.get('status') == 'good':
+                st.success(f"{status_icon} **{status_title}**: {status_desc}")
+            else:
+                st.success(f"{status_icon} **{status_title}**: {status_desc}")
+            
+            # Compact recommendation
+            st.caption(f"💡 {recommendations.get('message', 'Use data-driven backtesting')}")
+            
+            # Simplified metrics in one row
+            if data_quality and 'score' in data_quality:
+                score = data_quality['score']
+                grade = data_quality.get('grade', 'N/A')
+                consistency = data_quality.get('consistency_ratio', 0)
+                
+                st.caption(f"**Quality**: {grade} ({score}/100) | **Consistency**: {consistency:.0%} | **Products**: {data_context.get('total_products', 0)}")
+        elif analysis_complete:
+            # Analysis complete but no recommendations - show status
+            st.success("✅ **Data Analysis Complete!**")
+            st.caption("Processing recommendations...")
+            
+            # Use calculated recommendations if available, otherwise fallback
+            if recommendations:
+                min_value = recommendations.get('min_value', 6)
+                max_value = recommendations.get('max_value', 24)
+                default_value = recommendations.get('default_value', 12)
+            else:
+                # Fallback values
+                min_value = 6
+                max_value = 24
+                default_value = 12
+        else:
+            # No data uploaded yet - show waiting state
+            st.info("📤 **Please upload data for recommendations**")
+            
+            # Disable slider until data is uploaded
+            min_value = 6
+            max_value = 24
+            default_value = 12
+        
+        # Only enable slider if analysis is complete
+        slider_disabled = not analysis_complete
+        
+        st.markdown("")  # Add spacing before slider
+        backtest_months = st.slider(
+            "Backtest last X months",
+            min_value=min_value,
+            max_value=max_value,
+            value=default_value,
+            step=1,
+            disabled=slider_disabled,
+            help=f"Smart recommendation: {recommendations.get('recommended_range', '6-24 months') if analysis_complete else 'Upload data first'} based on your data"
         )
-
-        with st.expander("Backtesting settings (optional)", expanded=False):
-            c1, c2 = st.columns(2)
-            with c1:
-                backtest_gap = st.number_input(
-                    "Leakage gap (months)", min_value=0, max_value=6, value=1, step=1,
-                    help=(
-                        "Small buffer between training end and test start to avoid peeking ahead. "
-                        "Use 0–1 for most cases; use 2 if you have reporting lag or end‑of‑month spikes."
-                    )
-                )
-            with c2:
-                validation_horizon = st.number_input(
-                    "Validation horizon (months)", min_value=1, max_value=24, value=12, step=1,
-                    help=(
-                        "How far ahead each backtest predicts. 12 = full seasonality (default). "
-                        "Use 6 for near‑term focus or shorter history; 3 for very near‑term; 18–24 only with lots of history."
-                    )
-                )
-
-            # Quick recommendations
-            st.caption(
-                "• Most users: horizon = 12, gap = 1.  • Short history: horizon = 6 (or 3), gap = 0.  "
-                "• Heavy seasonality or long history: horizon = 12–18, gap = 1–2."
-            )
+        
+        # Simple backtesting - no advanced settings needed
+        # The main slider controls everything for simple validation
 
         # Fiscal calendar configuration (used for seasonal diagnostics)
+        st.markdown("#### 📅 **Fiscal Calendar**")
         months = [
             (1, "January"), (2, "February"), (3, "March"), (4, "April"), (5, "May"), (6, "June"),
             (7, "July"), (8, "August"), (9, "September"), (10, "October"), (11, "November"), (12, "December")
@@ -219,25 +288,15 @@ def create_accuracy_validation_section():
         )
         fiscal_year_start_month = next(m for m, label in months if label == selected_label)
 
-    # Derive flags used by the pipeline
-    enable_advanced_validation = True
-    if method_label.startswith("Automatic"):
-        enable_walk_forward = bool(enable_advanced_validation)
-        enable_cross_validation = bool(enable_advanced_validation)
-    elif method_label.startswith("Walk"):
-        enable_walk_forward = True
-        enable_cross_validation = False
-    else:
-        enable_walk_forward = False
-        enable_cross_validation = True
+    # Simple backtesting flag - always enabled for reliable validation
+    enable_backtesting = True
 
     return {
-        'enable_advanced_validation': enable_advanced_validation,
-        'enable_walk_forward': enable_walk_forward,
-        'enable_cross_validation': enable_cross_validation,
-    'backtest_gap': int(backtest_gap),
-    'validation_horizon': int(validation_horizon),
-    'fiscal_year_start_month': int(fiscal_year_start_month)
+        'enable_backtesting': enable_backtesting,
+        'backtest_months': int(backtest_months),
+        'backtest_gap': 1,  # Fixed at 1 month for simple validation
+        'validation_horizon': 6,  # Fixed at 6 months for reasonable validation
+        'fiscal_year_start_month': int(fiscal_year_start_month)
     }
 
 
@@ -372,6 +431,51 @@ def display_upload_section():
         type=["xls", "xlsx", "xlsb"],
         help="Upload Excel with Date, Product, ACR columns"
     )
+    
+    # AUTO-ANALYSIS: Run immediately after upload
+    if uploaded is not None:
+        try:
+            # Import here to avoid circular imports
+            from .utils import read_any_excel
+            from .data_validation import validate_data_format, prepare_data, analyze_data_quality, display_data_analysis_results
+            from .ui_components import display_data_context_summary
+            
+            # Read and validate data
+            raw = read_any_excel(io.BytesIO(uploaded.read()))
+            validate_data_format(raw)
+            
+            # Prepare data
+            try:
+                raw = prepare_data(raw)
+                
+                # Run data analysis immediately
+                st.markdown("### 🔍 **Data Analysis & Backtesting Recommendations**")
+                with st.spinner("Analyzing your data for optimal backtesting recommendations..."):
+                    data_analysis, overall_status = analyze_data_quality(raw)
+                    display_data_analysis_results(data_analysis, overall_status)
+                    # Get debug mode from session state
+                    current_debug_mode = st.session_state.get('debug_mode', False)
+                    display_data_context_summary(current_debug_mode)
+                
+                # Show ready message
+                st.success("✅ **Data Analysis Complete!** Check the sidebar for smart backtesting recommendations.")
+                
+                # Store uploaded file info for debugging
+                st.session_state['last_uploaded_file'] = uploaded.name
+                st.session_state['last_uploaded_size'] = uploaded.size
+                
+                # Store the processed data for the forecast pipeline
+                st.session_state['processed_data'] = raw
+                st.session_state['data_analysis_complete'] = True
+                st.session_state['sidebar_update_trigger'] = True
+                
+            except ValueError as e:
+                st.error(f"❌ **Data Error**: {str(e)}")
+                return uploaded, None
+                
+        except Exception as e:
+            st.error(f"❌ **Upload Error**: {str(e)}")
+            return uploaded, None
     
     # Clean run button
     col1, col2, col3 = st.columns([1, 2, 1])

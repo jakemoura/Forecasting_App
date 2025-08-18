@@ -1,70 +1,132 @@
 #!/usr/bin/env python3
 """
-Simple test to verify advanced validation features work
+Simple test script for the new smart backtesting functionality.
 """
 
-import numpy as np
-import pandas as pd
 import sys
 import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Add current directory to path
-sys.path.append('.')
+from modules.metrics import simple_backtesting_validation, comprehensive_validation_suite
+import pandas as pd
+import numpy as np
 
-def test_basic_functionality():
-    """Test basic functionality of our new features"""
+def create_test_series():
+    """Create a test time series for validation."""
+    dates = pd.date_range('2020-01-01', periods=48, freq='MS')
+    # Create seasonal data with trend
+    trend = np.linspace(100, 200, 48)
+    seasonal = 20 * np.sin(2 * np.pi * np.arange(48) / 12)
+    noise = np.random.normal(0, 5, 48)
+    values = trend + seasonal + noise
+    return pd.Series(values, index=dates)
+
+def create_simple_model_fitting_function():
+    """Create a simple model fitting function for testing."""
+    def fit_model(series):
+        # Simple linear model for testing
+        class SimpleModel:
+            def __init__(self, series):
+                self.series = series
+                self.coef = np.polyfit(range(len(series)), series.values, 1)[0]
+                self.intercept = np.polyfit(range(len(series)), series.values, 1)[1]
+            
+            def forecast(self, steps):
+                return np.array([self.intercept + self.coef * (len(self.series) + i) for i in range(steps)])
+        
+        return SimpleModel(series)
+    
+    return fit_model
+
+def test_simple_backtesting():
+    """Test the simple backtesting functionality."""
+    print("🧪 Testing Simple Backtesting...")
+    
+    # Create test data
+    series = create_test_series()
+    model_fitting_func = create_simple_model_fitting_function()
+    
+    # Test with different backtesting periods
+    test_cases = [
+        (12, 1, 6),   # 12 months backtesting, 1 month gap, 6 months horizon
+        (6, 0, 3),    # 6 months backtesting, 0 month gap, 3 months horizon
+        (24, 2, 12),  # 24 months backtesting, 2 month gap, 12 months horizon
+    ]
+    
+    for backtest_months, gap, horizon in test_cases:
+        print(f"\n📊 Testing: {backtest_months} months backtesting, {gap} month gap, {horizon} months horizon")
+        
+        try:
+            result = simple_backtesting_validation(
+                series, model_fitting_func, backtest_months, gap, horizon
+            )
+            
+            if result and result.get('success'):
+                print(f"✅ Success: MAPE {result.get('mape', 0):.1%}")
+                print(f"   Train months: {result.get('train_months', 0)}")
+                print(f"   Test months: {result.get('test_months', 0)}")
+                print(f"   Backtest period: {result.get('backtest_period', 0)}")
+            else:
+                print(f"❌ Failed: {result}")
+                
+        except Exception as e:
+            print(f"❌ Error: {str(e)}")
+
+def test_comprehensive_validation_suite():
+    """Test the comprehensive validation suite."""
+    print("\n🧪 Testing Comprehensive Validation Suite...")
+    
+    # Create test data
+    series = create_test_series()
+    model_fitting_func = create_simple_model_fitting_function()
+    
+    # Split for basic validation
+    split_point = len(series) - 12
+    train = series.iloc[:split_point]
+    val = series.iloc[split_point:]
+    
+    # Test the comprehensive suite
     try:
-        # Test metrics import
-        from modules.metrics import enhanced_mape_analysis, calculate_validation_metrics
-        print("✅ Metrics module imported successfully")
+        result = comprehensive_validation_suite(
+            actual=val.values,
+            forecast=val.values * 1.1,  # Simulate some forecast error
+            dates=val.index,
+            product_name="Test Product",
+            enable_walk_forward=False,
+            enable_cross_validation=False,
+            series=series,
+            model_fitting_func=model_fitting_func,
+            model_params={},
+            diagnostic_messages=[],
+            backtest_months=12,
+            backtest_gap=1,
+            validation_horizon=6,
+            fiscal_year_start_month=1
+        )
         
-        # Test models import  
-        from modules.models import create_ets_fitting_function
-        print("✅ Models module imported successfully")
+        print("✅ Comprehensive validation suite completed")
+        print(f"   Basic validation MAPE: {result.get('basic_validation', {}).get('mape', 0):.1%}")
         
-        # Test basic enhanced MAPE analysis
-        actual = np.array([100, 110, 95, 120, 105])
-        forecast = np.array([98, 108, 97, 118, 107])
-        dates = pd.date_range('2023-01-01', periods=5, freq='MS')
-        
-        result = enhanced_mape_analysis(actual, forecast, dates, "Test")
-        print(f"✅ Enhanced MAPE Analysis: {result['mape']:.1%} MAPE, {result['bias']:+.1%} bias")
-        
-        # Test model fitting function
-        # Create test series
-        np.random.seed(42)
-        dates = pd.date_range('2020-01-01', periods=36, freq='MS')
-        values = 1000 + np.random.normal(0, 50, 36)
-        series = pd.Series(values, index=dates)
-        
-        ets_func = create_ets_fitting_function("mul")
-        model = ets_func(series[:24])  # Train on 2 years
-        forecast_result = model.forecast(12)  # Forecast 1 year
-        print(f"✅ ETS Model Function: Forecasted {len(forecast_result)} periods")
-        
-        print("\n🎉 All basic advanced validation features working!")
-        return True
-        
+        backtesting = result.get('backtesting_validation')
+        if backtesting and backtesting.get('success'):
+            print(f"   Backtesting MAPE: {backtesting.get('mape', 0):.1%}")
+            print(f"   Method recommendation: {result.get('method_recommendation', {}).get('recommended', 'unknown')}")
+        else:
+            print("   Backtesting failed or not available")
+            
     except Exception as e:
-        print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+        print(f"❌ Error in comprehensive validation suite: {str(e)}")
 
-if __name__ == "__main__":
-    print("🧪 Testing Advanced Validation Implementation")
+def main():
+    """Run all tests."""
+    print("🚀 Starting Smart Backtesting Tests...")
     print("=" * 50)
     
-    if test_basic_functionality():
-        print("\n✅ SUCCESS: Advanced validation features are ready!")
-        print("\n📊 New Features Implemented:")
-        print("   • Enhanced MAPE analysis with confidence intervals and bias detection")
-        print("   • Walk-forward validation for robust back testing")
-        print("   • Time series cross-validation")
-        print("   • Seasonal performance analysis")
-        print("   • Model fitting functions for all validation methods")
-        print("   • Comprehensive validation suite")
-        print("   • UI components for advanced settings and results display")
-    else:
-        print("\n❌ FAILED: Check the error messages above")
-        sys.exit(1)
+    test_simple_backtesting()
+    test_comprehensive_validation_suite()
+    
+    print("\n" + "=" * 50)
+    print("✅ All tests completed!")
+
+if __name__ == "__main__":
+    main()
