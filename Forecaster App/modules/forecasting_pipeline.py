@@ -1856,6 +1856,18 @@ def _create_hybrid_model(results, best_models_per_product, avg_mapes, best_mapes
             if not product_specific_data.empty:
                 product_specific_data["BestModel"] = best_model_name  # Add metadata
                 hybrid_results.append(product_specific_data)
+        else:
+            # If the chosen model is missing, fall back to any available model's data for this product
+            try:
+                for alt_model, df in results.items():
+                    if isinstance(df, pd.DataFrame) and not df.empty:
+                        alt_data = df[df["Product"] == product].copy()
+                        if not alt_data.empty:
+                            alt_data["BestModel"] = alt_model
+                            hybrid_results.append(alt_data)
+                            break
+            except Exception:
+                pass
     
     if hybrid_results:
         hybrid_df = pd.concat(hybrid_results, ignore_index=True)

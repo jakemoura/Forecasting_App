@@ -504,9 +504,20 @@ def display_product_forecast(data, product, model_name, best_models_per_product=
     """
     # Filter data for this product
     product_data = data[data["Product"] == product].copy()
+    # Robust coercion to avoid silent Altair drops
+    if not product_data.empty:
+        product_data['Date'] = pd.to_datetime(product_data['Date'], errors='coerce')
+        product_data['ACR'] = pd.to_numeric(product_data['ACR'], errors='coerce')
+        product_data = product_data.replace([np.inf, -np.inf], np.nan).dropna(subset=['Date','ACR'])
     
     if product_data.empty:
         st.warning(f"No data available for product: {product}")
+        # Diagnostic dump for investigation
+        st.write("Raw head:")
+        try:
+            st.dataframe(data[data["Product"]==product].head(5))
+        except Exception:
+            pass
         return
     
     # Sort by date to ensure proper order
@@ -678,16 +689,52 @@ def create_forecast_chart(data, product_name, model_name, backtesting_data=None)
     Returns:
         Altair chart object
     """
-    # Prepare data for charting
+    # Prepare data for charting (coerce types and drop invalid rows)
     chart_data = data.copy()
-    chart_data['Date'] = pd.to_datetime(chart_data['Date'])
+    # Coerce Date to datetime and drop rows that fail conversion
+    chart_data['Date'] = pd.to_datetime(chart_data['Date'], errors='coerce')
+    chart_data = chart_data.dropna(subset=['Date'])
+    # Ensure numeric ACR and drop NaNs/Infs which can blank the chart
+    chart_data['ACR'] = pd.to_numeric(chart_data['ACR'], errors='coerce')
+    chart_data = chart_data.replace([np.inf, -np.inf], np.nan).dropna(subset=['ACR'])
+    # Ensure Type exists; if missing, infer historical vs forecast by Date cutoff
+    if 'Type' not in chart_data.columns or chart_data['Type'].isna().all():
+        cutoff = chart_data['Date'].max()
+        chart_data['Type'] = np.where(chart_data['Date'] <= cutoff, 'actual', 'forecast')
     
     # Create base chart
+    # Normalize/derive robust type flags so filters don't silently drop all rows
+    type_norm = None
+    if 'Type' in chart_data.columns:
+        try:
+            type_norm = chart_data['Type'].astype(str).str.strip().str.lower()
+        except Exception:
+            type_norm = None
+    actual_mask = pd.Series(False, index=chart_data.index)
+    forecast_mask = pd.Series(False, index=chart_data.index)
+    noncomp_mask = pd.Series(False, index=chart_data.index)
+    if type_norm is not None:
+        actual_mask |= type_norm.isin(['actual','history','historical'])
+        noncomp_mask |= type_norm.isin(['non-compliant-forecast','noncompliant-forecast','noncompliant'])
+        forecast_mask |= type_norm.isin(['forecast','future','fcst','prediction','predicted']) | noncomp_mask
+    if not actual_mask.any() and not forecast_mask.any():
+        # As a last resort, treat all rows as actual to avoid a blank chart
+        actual_mask = pd.Series(True, index=chart_data.index)
+    elif not actual_mask.any() and forecast_mask.any():
+        boundary = chart_data.loc[forecast_mask, 'Date'].min()
+        actual_mask = chart_data['Date'] < boundary
+    elif actual_mask.any() and not forecast_mask.any():
+        boundary = chart_data.loc[actual_mask, 'Date'].max()
+        forecast_mask = chart_data['Date'] > boundary
+    chart_data['is_actual'] = actual_mask
+    chart_data['is_forecast'] = forecast_mask
+    chart_data['is_noncompliant'] = noncomp_mask
+
     base = alt.Chart(chart_data)
     
     # Historical data line
     historical = base.transform_filter(
-        alt.datum.Type == 'actual'
+        alt.datum.is_actual
     ).mark_line(
         point=True,
         color='steelblue',
@@ -700,7 +747,7 @@ def create_forecast_chart(data, product_name, model_name, backtesting_data=None)
     
     # Forecast data line
     forecast = base.transform_filter(
-        alt.datum.Type == 'forecast'
+        alt.datum.is_forecast
     ).mark_line(
         point=True,
         color='orange',
@@ -714,7 +761,7 @@ def create_forecast_chart(data, product_name, model_name, backtesting_data=None)
     
     # Non-compliant forecast line (if exists)
     noncompliant = base.transform_filter(
-        alt.datum.Type == 'non-compliant-forecast'
+        alt.datum.is_noncompliant
     ).mark_line(
         point=True,
         color='darkred',
@@ -759,6 +806,13 @@ def create_forecast_chart(data, product_name, model_name, backtesting_data=None)
         )
         chart_layers.extend([backtest_predictions, backtest_actuals])
     
+    # If every layer ends up empty, fall back to a single line to avoid a blank panel
+    if not (chart_data['is_actual'].any() or chart_data['is_forecast'].any() or chart_data['is_noncompliant'].any()):
+        fallback = base.mark_line(point=True, color='steelblue', strokeWidth=3).encode(
+            x='Date:T', y='ACR:Q', tooltip=['Date:T','ACR:Q']
+        )
+        chart_layers = [fallback]
+
     # Combine all layers
     chart = alt.layer(*chart_layers).resolve_scale(
         color='independent'
