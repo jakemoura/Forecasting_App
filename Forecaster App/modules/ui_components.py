@@ -1443,14 +1443,16 @@ def display_forecast_results():
             options=ordered,
             index=default_idx,
             key="model_choice_charts",
-            help="View individual model outputs or one of the composite per‑product selections (Standard, Backtesting, Mix)."
+            help="🏆 Best per Product (Backtesting): Rigorous walk-forward validation (recommended). 📊 Best per Product (Standard): Multi-metric ranking fallback for insufficient history. 🎯 Individual models: Single model consistency."
         )
     with col2:
         chart_mape = avg_mapes.get(chart_model, np.nan) * 100
         if not np.isnan(chart_mape) and np.isfinite(chart_mape):
             if chart_model == "Best per Product (Backtesting)":
                 st.success(f"🏆 {chart_mape:.1f}% WAPE")
-            elif chart_model in ["Best per Product (Standard)", "Best per Product (Mix)"]:
+            elif chart_model == "Best per Product (Standard)":
+                st.warning(f"📊 {chart_mape:.1f}% WAPE")
+            elif chart_model in ["Best per Product (Mix)"]:
                 st.success(f"🏆 {chart_mape:.1f}% WAPE")
             elif chart_model == best_model:
                 st.success(f"🏆 {chart_mape:.1f}% WAPE")
@@ -1462,14 +1464,18 @@ def display_forecast_results():
                 st.success("🏆 Best Model (Composite)")
             else:
                 st.info("📈 Model Selected")
-        
-        # Use adjusted data if available, otherwise use original  
-        if st.session_state.get('adjusted_forecast_results') is not None:
-            chart_model_data = st.session_state.adjusted_forecast_results[chart_model]
-            if any(adj != 0 for adj in st.session_state.get('product_adjustments_applied', {}).values()):
-                st.info("📊 Showing adjusted forecasts based on your custom settings")
-        else:
-            chart_model_data = results[chart_model]
+    
+    # Add guidance when Standard is selected
+    if chart_model == "Best per Product (Standard)":
+        st.info("ℹ️ **Standard Selection**: Uses multi-metric ranking. Recommended only when insufficient data for backtesting (<24 months history).")
+    
+    # Use adjusted data if available, otherwise use original  
+    if st.session_state.get('adjusted_forecast_results') is not None:
+        chart_model_data = st.session_state.adjusted_forecast_results[chart_model]
+        if any(adj != 0 for adj in st.session_state.get('product_adjustments_applied', {}).values()):
+            st.info("📊 Showing adjusted forecasts based on your custom settings")
+    else:
+        chart_model_data = results[chart_model]
         
         # Business warnings for polynomial models
         if chart_model in ["Poly-2", "Poly-3"]:

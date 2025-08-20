@@ -477,13 +477,17 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
         except Exception:
             st.session_state.best_models_per_product_backtesting_mix = None
     
-    # Create only backtesting hybrid variant for viewing
+    # Create Standard hybrid variant (always available as fallback)
+    if best_models_per_product_standard:
+        results = _create_hybrid_model(results, best_models_per_product_standard, avg_mapes, best_mapes_per_product_standard, model_key_name="Best per Product (Standard)")
+    
+    # Create backtesting hybrid variant for viewing (preferred when available)
     if best_models_per_product_backtesting:
         results = _create_hybrid_model(results, best_models_per_product_backtesting, avg_mapes, best_mapes_per_product_backtesting, model_key_name="Best per Product (Backtesting)")
 
     # Provide diagnostics list reference to global helper
     _DRIFT_DIAGNOSTICS_REF = diagnostic_messages
-    # Do not create Standard or Mix variants anymore per policy
+    # Note: Standard variant available as fallback when backtesting eligibility insufficient
     raw_models_per_product = None
 
     # Store both mappings in session for UI toggle/explanations
