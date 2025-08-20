@@ -1,17 +1,19 @@
-# Forecasting Apps
+# Advanced Forecasting Applications
 
-Two Streamlit applications for business forecasting:
+Two professional-grade Streamlit applications for business revenue forecasting:
 
-- Forecaster App: multi-model, monthly time-series forecasting with statistical validation and business-aware selection.
-- Quarterly Outlook Forecaster: quick quarter projection from partial in-quarter daily data with capacity/renewal adjustments.
+- **Forecaster App**: Multi-model time-series forecasting with rigorous backtesting, WAPE-optimized selection, and business-aware model ranking
+- **Quarterly Outlook Forecaster**: Daily-to-quarterly projection with fiscal calendar support and renewal/capacity modeling
 
-## Features
+## Key Features
 
-- Multi-model comparison: SARIMA/ETS, Auto-ARIMA, Prophet, LightGBM, Polynomial baselines
-- Advanced validation: walk-forward validation and time-series cross-validation (MAPE, SMAPE, MASE, RMSE)
-- Auto (per product) selection: choose Standard vs Backtesting based on lower validation error
-- Business adjustments: growth assumptions, market multipliers, fiscal calendar awareness
-- Outlook-specific: capacity constraints, renewal spike detection, monthly breakdown, Excel exports
+- **🏆 Best per Product Selection**: Intelligent hybrid approach using optimal models per product
+- **🧪 Rigorous Backtesting**: Walk-forward validation with strict eligibility criteria (≥24 months, stability checks)
+- **📊 WAPE-First Accuracy**: Revenue-aligned error measurement with business-relevant interpretations
+- **🛡️ Business-Aware Safeguards**: Deprioritizes polynomial models for revenue forecasting scenarios
+- **🔮 Advanced Models**: SARIMA (AIC/BIC), ETS, Prophet (holidays), Auto-ARIMA, LightGBM, Seasonal-Naive
+- **⚙️ Multi-Metric Ranking**: Robust selection across WAPE, SMAPE, MASE, RMSE for statistical confidence
+- **🎯 Interactive Adjustments**: Management overrides, growth assumptions, scenario planning
 
 ## Repo structure
 
@@ -20,35 +22,73 @@ Two Streamlit applications for business forecasting:
 - Help/: Setup scripts, requirements, installer resources
 - App/, Installer.lnk, RUN_*.bat: Windows-friendly launchers and helpers
 
-## Quick start (Windows)
+## Quick Start (Windows)
 
-Most users should run the apps using the provided .BAT files from File Explorer (not from a browser):
+**📁 File Explorer Method (Recommended):**
+- **Forecaster App**: Double-click `Forecaster App/RUN_FORECAST_APP.bat`
+- **Quarterly Outlook**: Double-click `Quarter Outlook App/RUN_OUTLOOK_FORECASTER.bat`
 
-- Run Forecaster App: double-click `Forecaster App/RUN_FORECAST_APP.bat` (or repo-root `RUN_FORECAST_APP.bat`)
-- Run Quarterly Outlook Forecaster: double-click `Quarter Outlook App/RUN_OUTLOOK_FORECASTER.bat` (or repo-root `RUN_OUTLOOK_FORECASTER.bat`)
+**⚠️ Important**: Run .BAT files from File Explorer, not web browsers.
 
-See `USER_GUIDE.html` for screenshots and workflow tips.
+**📖 Documentation**: See `USER_GUIDE.html` for comprehensive workflow guidance and `Help/SETUP_GUIDE.html` for installation.
 
-## Data requirements (summary)
+## Data Requirements
 
-- Forecaster App: regular time index (monthly/weekly/daily), product identifiers; ≥ 12–18 periods recommended
-- Quarterly Outlook Forecaster: daily data with columns `Date`, `Product`, `ACR`; fiscal calendar supported (e.g., July–June)
+**Forecaster App:**
+- **Format**: Excel/CSV with Date, Product, ACR columns
+- **Time index**: Regular monthly/weekly/daily (gaps handled automatically)
+- **History**: ≥24 months recommended for backtesting eligibility; ≥12 months minimum
+- **Products**: Consistent identifiers across time periods
 
-## Backtesting guidance
+**Quarterly Outlook Forecaster:**  
+- **Format**: Daily data with Date, Product, ACR columns
+- **Fiscal calendar**: Configurable (e.g., July-June quarters)
+- **Coverage**: Current quarter partial data + historical quarters for model training
 
-- Validation method
-  - Automatic (recommended): app picks the most reliable signal
-  - Walk-forward: simulates month-by-month forecasting
-  - Cross-validation: checks multiple time splits for stability
-- Leakage gap (months): 0–1 for most; 2 if there’s known reporting lag/end-of-month spikes
-- Validation horizon (months)
-  - 12: default; captures full seasonality
-  - 6: near-term focus or shorter history
-  - 3: very near-term planning
-  - 18–24: only with lots of history and strong seasonality
-- Data needs: walk-forward typically needs ~`24 + gap + horizon` months of history; if short, the app reduces folds or falls back to Standard
+## Model Selection & Backtesting
 
-## Developer setup (optional)
+**🏆 Best per Product (Backtesting) - Default & Recommended:**
+- **Process**: Rigorous walk-forward validation per product with strict eligibility
+- **Eligibility**: ≥24 months history, ≥2 backtesting folds, MASE < 1.0, ≥5% better than Seasonal-Naive
+- **Scoring**: Primary WAPE → p75 WAPE → MASE → recent worst-month (tie-breaking hierarchy)
+- **Safeguards**: Stability checks (p95 WAPE ≤ 2× mean), polynomial deprioritization for revenue
+
+**📊 Best per Product (Standard) - Fallback:**
+- **Process**: Multi-metric ranking across WAPE, SMAPE, MASE, RMSE
+- **Use case**: When backtesting eligibility insufficient (<24 months history)
+- **Selection**: Best average rank across all validation metrics per product
+
+**🎯 Individual Models:**
+- **Purpose**: Consistency across products or domain expertise applications  
+- **Options**: SARIMA, ETS, Prophet, Auto-ARIMA, LightGBM, Seasonal-Naive
+- **Selection**: Choose when you prefer single-model interpretation
+
+**⚙️ Backtesting Configuration:**
+- **Gap**: 0 months (default) | 1-2 months if autocorrelation/lag concerns
+- **Horizon**: 6 months (mimics real forecasting) | configurable based on planning needs
+- **Step size**: 6 months (captures seasonal cycles)
+- **Fallback**: Automatic degradation to Standard selection when history insufficient
+
+## WAPE Accuracy & Interpretation
+
+**📊 Primary Metric: WAPE (Weighted Absolute Percentage Error)**
+- **Formula**: `sum(|Actual - Forecast|) / sum(|Actual|)`
+- **Advantage**: Revenue-aligned (dollar-weighted), robust to zero/small values
+- **Business relevance**: 15% WAPE = forecasts typically within 15% of actual revenue
+
+**🎯 Accuracy Interpretation:**
+- **0-10%**: Excellent accuracy (professional-grade forecasting)
+- **10-20%**: Good accuracy (acceptable for most business decisions)
+- **20-30%**: Moderate accuracy (use caution for critical decisions)
+- **30%+**: Lower accuracy (consider manual adjustments or business overrides)
+
+**🔧 When WAPE is High:**
+- Apply interactive adjustments for management overrides
+- Check for outliers or data quality issues  
+- Consider longer historical periods if available
+- Review polynomial model warnings (deprioritized automatically)
+
+## Developer Setup (Optional)
 
 If you prefer running from source instead of the .BAT files:
 
@@ -92,7 +132,20 @@ git lfs track "*.xls" "*.xlsx" "*.xlsb" "*.zip"
 - See `Help/LICENSE.txt` for licensing details
 - Do not commit confidential data or secrets. Streamlit secrets (if used): `.streamlit/secrets.toml` (ignored by default)
 
-## Troubleshooting
+## Troubleshooting & Best Practices
 
-- OneDrive file locks can occasionally interfere with Git or app runs; retry after a few seconds or close apps using the files
-- If backtesting is unavailable for a product, history is likely too short—use Standard or Auto mode
+**📊 Model Selection Issues:**
+- **Short history (<24 months)**: App automatically falls back to Best per Product (Standard)
+- **High WAPE (>30%)**: Apply interactive adjustments, check data quality, or extend historical period
+- **Polynomial warnings**: Business-aware selection is enabled by default for revenue forecasting
+
+**🔧 Technical Issues:**
+- **OneDrive file locks**: Close Excel/apps using files, retry after a few seconds
+- **BAT file errors**: Run from File Explorer, not browsers; check Windows execution policy
+- **Package conflicts**: Use provided requirements files and clean Python environment
+
+**💡 Best Practices:**
+- **Default approach**: Use Best per Product (Backtesting) for highest accuracy
+- **Composite vs individual**: Composite models (Best per Product) often outperform single models
+- **Interactive adjustments**: Apply management overrides for business strategy changes
+- **Model comparison**: Use dropdown to compare approaches; WAPE displayed for transparency
