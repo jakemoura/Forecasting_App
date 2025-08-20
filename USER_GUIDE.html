@@ -82,10 +82,10 @@
           <h3>Quick start</h3>
           <ol>
             <li>Open the app via <span class="mono">Forecaster App/RUN_FORECAST_APP.bat</span>.</li>
-            <li>Go to <strong>Data Upload</strong> and load your file (CSV or Excel). Ensure a date/time column and one or more measure columns exist (e.g., quantity/revenue) plus product/category identifiers.</li>
-            <li>Go to <strong>Results</strong>. Use the <em>Selection Mode</em> at the top: <strong>Standard</strong>, <strong>Backtesting</strong>, or <strong>Auto (per product)</strong>.</li>
-            <li>Review the blue info boxes (top and per product) for rationale, MAPE comparisons, and impact.</li>
-            <li>Download the active mode’s results as CSV using the provided button.</li>
+            <li>Upload your Excel/CSV file with Date, Product, and ACR columns. Configure sidebar settings (models, horizon, backtesting options).</li>
+            <li>The app automatically defaults to <strong>Best per Product (Backtesting)</strong> - the recommended approach for highest accuracy.</li>
+            <li>Review results summary showing WAPE, confidence levels, and model selection breakdown (e.g., "SARIMA 57%, ETS 43%").</li>
+            <li>Use the model dropdown to compare different approaches or individual models. Download results or apply interactive adjustments.</li>
           </ol>
         </div>
         <div class="card">
@@ -99,19 +99,19 @@
         </div>
       </div>
 
-      <h2>Selection modes</h2>
+      <h2>Model Selection Approaches</h2>
       <div class="infobox">
-        <p><strong>Standard:</strong> Ranks models using a multi-metric blend (MAPE/SMAPE/MASE/RMSE) on the training sample, with sensible business rules (e.g., polynomial safeguards). Produces one “best model” per product.</p>
-        <p><strong>Backtesting:</strong> Uses walk-forward validation (and cross-validation where applicable) to simulate out-of-sample performance. The summary shows validation MAPEs by model.</p>
-        <p><strong>Auto (per product):</strong> For each product the app compares the Standard vs Backtesting MAPEs and picks whichever is lower. You’ll see chosen counts, average MAPE, and impact vs all-Standard at the top.</p>
+        <p><strong>Best per Product (Backtesting) - Recommended:</strong> Uses rigorous walk-forward backtesting to select the best model for each product individually. Employs strict eligibility criteria (≥24 months history, ≥2 folds, stability checks) and business-aware safeguards. Shows WAPE from actual backtesting performance.</p>
+        <p><strong>Best per Product (Standard):</strong> Multi-metric ranking approach using validation data. Ranks models across WAPE, SMAPE, MASE, and RMSE, then selects best average rank per product. More robust to outliers, works with shorter history.</p>
+        <p><strong>Individual Models:</strong> Choose a single model (SARIMA, ETS, Prophet, etc.) for all products. Useful when you want consistency or have domain expertise about which model works best for your business.</p>
       </div>
 
-      <h2>Backtesting details</h2>
+      <h2>Rigorous Backtesting Methodology</h2>
       <ul>
-        <li><strong>Walk-forward windows:</strong> Trains on an initial window, then rolls forward forecasting the next step(s). Results aggregate into per-model MAPEs.</li>
-        <li><strong>Leakage gap:</strong> A small gap can be used between train and validation to reduce leakage with strong autocorrelation or calendar effects.</li>
-        <li><strong>Cross-validation:</strong> Where available, complementary CV stats are added for robustness.</li>
-        <li><strong>Fallbacks:</strong> When history is short, the app reduces folds/horizon or defaults to Standard.</li>
+        <li><strong>Walk-forward validation:</strong> Expanding-window backtests with 6-month steps, creating multiple out-of-sample validation windows that mimic real forecasting scenarios.</li>
+        <li><strong>Strict eligibility:</strong> Requires ≥24 months history, ≥2 folds, MASE < 1.0, must beat Seasonal-Naive by ≥5% WAPE, and stability checks (p95 WAPE ≤ 2× mean).</li>
+        <li><strong>WAPE-first scoring:</strong> Primary ranking by mean WAPE, with tie-breaks using p75 WAPE → MASE → recent worst-month error.</li>
+        <li><strong>Business-aware safeguards:</strong> Polynomial models deprioritized for revenue forecasting; fallback to Seasonal-Naive or ETS when eligibility fails.</li>
       </ul>
 
       <h3>Recommended settings</h3>
@@ -131,18 +131,21 @@
         <div class="card"><h3>Polynomial</h3><p>Business-friendly baselines with guardrails to prevent overfit; included in ranking.</p></div>
       </div>
 
-      <h2>Reading the UI</h2>
+      <h2>Understanding the Results Interface</h2>
       <div class="kpis">
-        <div class="kpi"><strong>Top blue box</strong><br><span class="muted">Shows Standard vs Backtesting average MAPEs, Auto picks, and total impact.</span></div>
-        <div class="kpi"><strong>Per-product box</strong><br><span class="muted">Explains why a product used Standard or Backtesting and the MAPE delta.</span></div>
-        <div class="kpi"><strong>Downloads</strong><br><span class="muted">Exports the currently selected mode (Standard/Backtesting/Auto).</span></div>
+        <div class="kpi"><strong>Results Summary</strong><br><span class="muted">Shows overall WAPE, confidence level, model breakdown percentages, and total forecast amount.</span></div>
+        <div class="kpi"><strong>Model Dropdown</strong><br><span class="muted">Defaults to "Best per Product (Backtesting)" but allows comparison with other approaches. Shows WAPE percentage for selected model.</span></div>
+        <div class="kpi"><strong>Forecast Totals</strong><br><span class="muted">Product-level forecast amounts with individual product charts and performance indicators.</span></div>
+        <div class="kpi"><strong>Interactive Features</strong><br><span class="muted">Apply manual adjustments, download results, view backtesting details, and access diagnostic information.</span></div>
       </div>
 
-      <h2>Troubleshooting & tips</h2>
+      <h2>Troubleshooting & Best Practices</h2>
       <ul>
-        <li><strong>No/short history:</strong> Try Standard mode; Auto will fall back gracefully.</li>
-        <li><strong>Zero/near-zero actuals:</strong> MAPE can be unstable. Compare with SMAPE/MASE in details.</li>
-        <li><strong>Outliers/spikes:</strong> Consider smoothing or enabling spike handling if available.</li>
+        <li><strong>Short history (&lt;24 months):</strong> App automatically falls back to Best per Product (Standard) with multi-metric ranking.</li>
+        <li><strong>Zero/near-zero actuals:</strong> WAPE handles this better than MAPE, but very sparse data may still be challenging.</li>
+        <li><strong>High WAPE (&gt;30%):</strong> Consider applying interactive adjustments, checking for outliers, or using longer historical periods.</li>
+        <li><strong>Polynomial warnings:</strong> Business-aware selection is enabled by default to prioritize seasonal models over polynomial fits for revenue data.</li>
+        <li><strong>Model comparison:</strong> Use the dropdown to compare individual models with composite approaches; composite often wins.</li>
       </ul>
     </section>
 
@@ -197,23 +200,31 @@
       </ul>
     </section>
 
-    <h2>Glossary</h2>
+    <h2>Key Metrics & Terminology</h2>
     <div class="grid">
       <div class="card">
-        <h3>MAPE</h3>
-        <p>Mean Absolute Percentage Error. Lower is better. Can be unstable near zero actuals.</p>
+        <h3>WAPE (Primary Metric)</h3>
+        <p><strong>Weighted Absolute Percentage Error:</strong> sum(|Actual - Forecast|) / sum(|Actual|). Revenue-aligned accuracy measure that weights errors by dollar amounts. 15% WAPE = forecasts typically within 15% of actual revenue.</p>
       </div>
       <div class="card">
-        <h3>SMAPE / MASE / RMSE</h3>
-        <p>Complementary error metrics used in Standard ranking for robustness beyond MAPE.</p>
+        <h3>WAPE Accuracy Levels</h3>
+        <p><strong>0-10%:</strong> Excellent accuracy. <strong>10-20%:</strong> Good accuracy. <strong>20-30%:</strong> Moderate accuracy. <strong>30%+:</strong> Lower accuracy, consider manual adjustments.</p>
       </div>
       <div class="card">
-        <h3>Walk-forward validation</h3>
-        <p>Rolling-origin evaluation that mimics production forecasting by repeatedly training and testing forward in time.</p>
+        <h3>Multi-Metric Ranking</h3>
+        <p>Models ranked across WAPE, SMAPE, MASE, and RMSE for robustness. Best average rank across all metrics wins per product.</p>
       </div>
       <div class="card">
-        <h3>Auto (per product)</h3>
-        <p>Hybrid selection that chooses, for each product, whichever of Standard or Backtesting yielded lower MAPE.</p>
+        <h3>Walk-Forward Backtesting</h3>
+        <p>Expanding-window validation that trains on increasing historical data and predicts forward, mimicking real forecasting conditions with strict eligibility criteria.</p>
+      </div>
+      <div class="card">
+        <h3>Business-Aware Selection</h3>
+        <p>Deprioritizes polynomial models for revenue forecasting due to potential unrealistic growth curves in consumptive business scenarios.</p>
+      </div>
+      <div class="card">
+        <h3>Composite Models</h3>
+        <p>Best per Product approaches that combine the optimal individual model for each product, often achieving better overall accuracy than any single model.</p>
       </div>
     </div>
 

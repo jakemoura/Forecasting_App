@@ -212,14 +212,14 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
     # Count valid products for progress tracking
     diagnostic_messages.append(f"🔍 **Data Validation**: Analyzing data quality for {len(products)} products...")
     valid_products = _get_valid_products(raw_data, diagnostic_messages)
-    # Enforce core model set of five when available
-    enforced_models = [m for m in ["ETS", "SARIMA", "Seasonal-Naive", "Auto-ARIMA", "Prophet", "LightGBM"] if m in models_selected or m in ["ETS","SARIMA","Seasonal-Naive","Auto-ARIMA","Prophet","LightGBM"]]
-    # Keep only models that user/environment can actually run (presence handled upstream)
-    models_selected = list(dict.fromkeys([m for m in models_selected if m in enforced_models] + enforced_models))
+    # Respect user selections; do not auto-add models that weren't chosen
+    enforced_models = list(models_selected)
+    # Keep only user-chosen models (deduplicated)
+    models_selected = list(dict.fromkeys([m for m in models_selected if m in enforced_models]))
     total = len(models_selected) * len(valid_products)
     
     if total == 0:
-        raise ValueError("No valid products found with sufficient data")
+        raise ValueError("No models selected or no valid products found with sufficient data")
     
     diagnostic_messages.append(f"✅ **Validation Complete**: {len(valid_products)} products passed quality checks, {len(products) - len(valid_products)} products failed")
     diagnostic_messages.append(f"📈 **Processing Scope**: Will run {len(models_selected)} models on {len(valid_products)} products = {total} total operations")
@@ -240,9 +240,14 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
                 diagnostic_messages.append("⚠️ Auto-ARIMA not available (pmdarima missing).")
                 continue
             pruned.append(m)
-        models_selected = pruned or ["ETS", "SARIMA", "Seasonal-Naive"]
+        models_selected = pruned
     except Exception:
         pass
+    
+    # Recompute total after pruning/availability filtering
+    total = len(models_selected) * len(valid_products)
+    if total == 0:
+        raise ValueError("No models selected or supported in this environment. Please select at least one model.")
     
     # Process each product
     diagnostic_messages.append(f"🔄 **Starting Product Processing**: Processing {len(valid_products)} products sequentially...")
@@ -1874,8 +1879,14 @@ def _create_hybrid_model(results, best_models_per_product, avg_mapes, best_mapes
         hybrid_df["FiscalYear"] = hybrid_df["Date"].apply(fy)
         results[model_key_name] = hybrid_df
         
-        # Calculate average MAPE for hybrid model
-        hybrid_avg_mape = np.mean(list(best_mapes_per_product.values()))
+        # Calculate average MAPE for hybrid model, excluding infinite values
+        mape_values = list(best_mapes_per_product.values())
+        finite_mapes = [m for m in mape_values if np.isfinite(m)]
+        if finite_mapes:
+            hybrid_avg_mape = np.mean(finite_mapes)
+        else:
+            # If all individual product MAPEs are infinite, use a high but finite value
+            hybrid_avg_mape = 1.0  # 100% WAPE as fallback
         avg_mapes[model_key_name] = hybrid_avg_mape
     
     return results

@@ -158,7 +158,7 @@ def display_cross_validation_results(backtesting_results):
         st.info("No cross-validation results available.")
 
 
-def display_seasonal_performance_analysis(advanced_validation_results):
+def display_seasonal_performance_analysis(backtesting_results):
     """Display seasonal performance analysis."""
     st.markdown("### Seasonal Performance Analysis")
     st.markdown("Model accuracy patterns by month and quarter.")
@@ -528,7 +528,7 @@ def display_product_forecast(data, product, model_name, best_models_per_product=
     # Track the actual per-product model used (for backtest overlay and chart title)
     actual_model = model_name
     with col1:
-    # Prefer explicit BestModel column if present (hybrid views like Standard / Backtesting / Raw)
+        # Prefer explicit BestModel column if present (hybrid views like Standard / Backtesting / Raw)
         if 'BestModel' in product_data.columns and not product_data['BestModel'].isna().all():
             actual_model = str(product_data['BestModel'].iloc[0])
             # Attach selection rationale if available
@@ -578,6 +578,19 @@ def display_product_forecast(data, product, model_name, best_models_per_product=
         overlay_model = actual_model
         backtesting_chart_data = prepare_backtesting_chart_data(backtesting_results, product, overlay_model)
         
+        # Debug: show head and unique type values for this product slice
+        with st.expander("🔎 Debug: product data slice (first 10 rows)", expanded=False):
+            try:
+                st.write({
+                    'rows': len(product_data),
+                    'date_dtype': str(product_data['Date'].dtype) if 'Date' in product_data.columns else 'missing',
+                    'acr_dtype': str(product_data['ACR'].dtype) if 'ACR' in product_data.columns else 'missing',
+                    'type_unique': product_data['Type'].astype(str).unique().tolist() if 'Type' in product_data.columns else ['missing']
+                })
+                st.dataframe(product_data.head(10), use_container_width=True)
+            except Exception:
+                pass
+
         # Create chart with backtesting overlay
         chart = create_forecast_chart(product_data, product, actual_model, backtesting_chart_data)
         st.altair_chart(chart, use_container_width=True)
@@ -812,6 +825,12 @@ def create_forecast_chart(data, product_name, model_name, backtesting_data=None)
             x='Date:T', y='ACR:Q', tooltip=['Date:T','ACR:Q']
         )
         chart_layers = [fallback]
+
+    # Always include a raw line as a safety net so charts never render blank
+    raw_all = base.mark_line(point=True, color='steelblue', opacity=0.35, strokeWidth=2).encode(
+        x='Date:T', y='ACR:Q', tooltip=['Date:T','ACR:Q']
+    )
+    chart_layers.append(raw_all)
 
     # Combine all layers
     chart = alt.layer(*chart_layers).resolve_scale(
@@ -1407,7 +1426,17 @@ def display_forecast_results():
         for comp in ["Best per Product (Standard)", "Best per Product (Backtesting)", "Best per Product (Mix)"]:
             if comp in cleaned:
                 ordered.append(comp)
-        default_key = best_model if best_model in ordered else ("Best per Product (Mix)" if "Best per Product (Mix)" in ordered else ordered[0])
+        # Prioritize "Best per Product (Backtesting)" as the default, then fallback to other options
+        if "Best per Product (Backtesting)" in ordered:
+            default_key = "Best per Product (Backtesting)"
+        elif "Best per Product (Mix)" in ordered:
+            default_key = "Best per Product (Mix)"
+        elif "Best per Product (Standard)" in ordered:
+            default_key = "Best per Product (Standard)"
+        elif best_model in ordered:
+            default_key = best_model
+        else:
+            default_key = ordered[0]
         default_idx = ordered.index(default_key) if default_key in ordered else 0
         chart_model = st.selectbox(
             "📊 Select model to view",
@@ -1417,13 +1446,22 @@ def display_forecast_results():
             help="View individual model outputs or one of the composite per‑product selections (Standard, Backtesting, Mix)."
         )
     with col2:
-        if chart_model == best_model:
-            st.success("🏆 Best Model (Backtesting)")
+        chart_mape = avg_mapes.get(chart_model, np.nan) * 100
+        if not np.isnan(chart_mape) and np.isfinite(chart_mape):
+            if chart_model == "Best per Product (Backtesting)":
+                st.success(f"🏆 {chart_mape:.1f}% WAPE")
+            elif chart_model in ["Best per Product (Standard)", "Best per Product (Mix)"]:
+                st.success(f"🏆 {chart_mape:.1f}% WAPE")
+            elif chart_model == best_model:
+                st.success(f"🏆 {chart_mape:.1f}% WAPE")
+            else:
+                st.info(f"📈 WAPE: {chart_mape:.1f}%")
         else:
-            chart_mape = avg_mapes.get(chart_model, np.nan) * 100
-            if not np.isnan(chart_mape):
-                    # Show ranking info if available
-                    st.info(f"📈 WAPE: {chart_mape:.1f}%")
+            # Fallback for models without WAPE data or infinite WAPE
+            if chart_model.startswith("Best per Product"):
+                st.success("🏆 Best Model (Composite)")
+            else:
+                st.info("📈 Model Selected")
         
         # Use adjusted data if available, otherwise use original  
         if st.session_state.get('adjusted_forecast_results') is not None:
@@ -1551,19 +1589,14 @@ def display_forecast_results():
 
     st.markdown("---")
 
-    # Quick product tabs for easy navigation
-    unique_products = chart_model_data["Product"].unique()
-    if len(unique_products) > 1:
-        product_tabs = st.tabs([f"📊 {product}" for product in unique_products])
-
-        for tab_obj, product in zip(product_tabs, unique_products):
-            with tab_obj:
-                display_product_forecast(chart_model_data, product, chart_model, best_models_per_product, best_mapes_per_product)
-    else:
-        # Single product - no tabs needed
-        product = unique_products[0]
-        st.markdown(f"### 📊 **{product}**")
-        display_product_forecast(chart_model_data, product, chart_model, best_models_per_product, best_mapes_per_product)
+    # Quick product selector (render only one chart at a time for stability/performance)
+    unique_products = list(chart_model_data["Product"].unique())
+    if len(unique_products) == 0:
+        st.warning("No products found in results")
+        return
+    product = st.selectbox("Select product", options=unique_products, index=0, key="chart_product_choice")
+    st.markdown(f"### 📊 **{product}**")
+    display_product_forecast(chart_model_data, product, chart_model, best_models_per_product, best_mapes_per_product)
 
     # === GROWTH ANALYSIS (OPTIONAL) ===
     with st.expander("📈 **Month-over-Month Growth Analysis**", expanded=False):
@@ -1573,23 +1606,24 @@ def display_forecast_results():
         if st.session_state.get('product_adjustments_applied') and any(adj != 0 for adj in st.session_state.get('product_adjustments_applied', {}).values()):
             st.info("📊 Growth charts reflect your custom product adjustments")
 
-        for product_mom in unique_products:
-            df_product_mom = chart_model_data[chart_model_data["Product"] == product_mom].copy()
-            dfm_growth = None  # Initialize to handle potential errors
+        # Use the same selected product for growth analysis to avoid rendering many charts at once
+        product_mom = product
+        df_product_mom = chart_model_data[chart_model_data["Product"] == product_mom].copy()
+        dfm_growth = None  # Initialize to handle potential errors
 
-            st.markdown(f"**📊 {product_mom}**")
+        st.markdown(f"**📊 {product_mom}**")
 
-            # Show adjustment info for this product if applied
-            if st.session_state.get('product_adjustments_applied') and product_mom in st.session_state.product_adjustments_applied:
-                adj_info = st.session_state.product_adjustments_applied[product_mom]
-                if isinstance(adj_info, dict):
-                    adj_pct = adj_info.get('percentage', 0)
-                    start_display = adj_info.get('start_display', 'Unknown')
-                    if adj_pct != 0:
-                        if adj_pct > 0:
-                            st.markdown(f"*📈 +{adj_pct}% growth from {start_display}*")
-                        else:
-                            st.markdown(f"*📉 {adj_pct}% haircut from {start_display}*")
+        # Show adjustment info for this product if applied
+        if st.session_state.get('product_adjustments_applied') and product_mom in st.session_state.product_adjustments_applied:
+            adj_info = st.session_state.product_adjustments_applied[product_mom]
+            if isinstance(adj_info, dict):
+                adj_pct = adj_info.get('percentage', 0)
+                start_display = adj_info.get('start_display', 'Unknown')
+                if adj_pct != 0:
+                    if adj_pct > 0:
+                        st.markdown(f"*📈 +{adj_pct}% growth from {start_display}*")
+                    else:
+                        st.markdown(f"*📉 {adj_pct}% haircut from {start_display}*")
 
             try:
                 df_product_mom = df_product_mom.set_index("Date")
@@ -1600,7 +1634,8 @@ def display_forecast_results():
                 # Validate growth data
                 if len(mom_growth) == 0:
                     st.warning(f"⚠️ Insufficient data for growth analysis: {product_mom}")
-                    continue
+                    dfm_growth = None
+                    raise ValueError("No MoM data")
 
                 dfm_growth = (
                     mom_growth
@@ -1612,7 +1647,8 @@ def display_forecast_results():
                 # Validate growth dataframe
                 if len(dfm_growth) == 0 or dfm_growth['growth'].isna().all():
                     st.warning(f"⚠️ No valid growth data for {product_mom}")
-                    continue
+                    dfm_growth = None
+                    raise ValueError("No valid growth data")
 
                 dfm_growth['growth_formatted'] = dfm_growth['growth'].apply(
                     lambda x: f"{x:.1%}" if pd.notna(x) else "N/A"
@@ -1993,7 +2029,8 @@ def display_forecast_results():
         adv = st.session_state.get('advanced_validation_results')
         if adv:
             st.markdown("---")
-            display_advanced_validation_results(adv)
+            # TODO: Implement display_advanced_validation_results function
+            st.info("Advanced validation results available but display function not implemented yet.")
 
         # === BACKTESTING DETAILS (product/model table) ===
         bt_all = st.session_state.get('backtesting_results', {}) or {}

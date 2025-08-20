@@ -64,6 +64,7 @@ def create_sidebar_controls():
             "Choose forecasting models",
             available_models,
             default=default_models,
+            key="models_selected",
             help="Core models are preselected. Additional models may be included if available."
         )
         

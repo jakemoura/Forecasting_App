@@ -115,88 +115,146 @@ def render_example_data_tab():
 
 def render_model_guide_tab():
     """Render the model guide/glossary tab content."""
-    st.subheader("📝 Glossary of Forecasting Methods & Metrics")
+    st.subheader("📝 Comprehensive Guide to Forecasting Methods & Metrics")
     
     # Key Metrics Section
-    st.markdown("### 🎯 **Key Performance Metrics**")
+    st.markdown("### 🎯 **Primary Performance Metric: WAPE**")
     st.markdown("""
-    **WAPE (Weighted Absolute Percentage Error)** - Primary accuracy measure:
-    - **What it means:** Dollar-weighted error: sum(|A−F|) / sum(|A|)
-    - **Why lower is better:** Aligns with revenue impact; robust to small denominators
-    - **Example:** 10% WAPE = dollar-weighted forecasts typically within 10% of actual values
-    - **Interpretation:** 
-      - 0-10% = Excellent accuracy 🎯
-      - 10-20% = Good accuracy 📈  
-      - 20-50% = Moderate accuracy ⚠️
-      - 50%+ = Lower accuracy 🔴
+    **WAPE (Weighted Absolute Percentage Error)** - Our primary accuracy measure:
     
-    **AIC (Akaike Information Criterion)** - Statistical model quality:
-    - **What it means:** Balances model fit quality with complexity
-    - **Why lower is better:** Better statistical fit without overfitting
+    **🔢 Formula:** `sum(|Actual - Forecast|) / sum(|Actual|)`
     
-    **BIC (Bayesian Information Criterion)** - Alternative statistical model quality:
-    - **What it means:** Similar to AIC but penalizes complexity more heavily
-    - **Why it matters:** Favors simpler, more generalizable models
-    - **Usage:** Compared to AIC in SARIMA selection, especially good for smaller datasets
-    - **Our approach:** Test both and choose the one that performs better on validation data
+    **💡 Why WAPE instead of MAPE?**
+    - **Revenue-aligned:** Weights errors by actual dollar amounts, not percentages
+    - **Robust:** Handles zero/small values better than traditional MAPE
+    - **Business-relevant:** Higher revenue products have more impact on the error
+    - **Interpretable:** 15% WAPE = forecasts are typically within 15% of actual revenue
+    
+    **📊 Accuracy Interpretation:**
+    - **0-10%** = Excellent accuracy 🎯 (Professional-grade forecasting)
+    - **10-20%** = Good accuracy 📈 (Acceptable for most business decisions)  
+    - **20-30%** = Moderate accuracy ⚠️ (Use with caution for critical decisions)
+    - **30%+** = Lower accuracy 🔴 (Consider manual adjustments or business overrides)
+    
+    **⚙️ Secondary Metrics for Model Selection:**
+    - **SMAPE:** Symmetric MAPE, useful for comparing models on volatile data
+    - **MASE:** Mean Absolute Scaled Error, compares performance to seasonal naive
+    - **RMSE:** Root Mean Square Error, penalizes larger errors more heavily
+    - **AIC/BIC:** Statistical model quality measures (lower is better)
+    
+    **🎲 Multi-Metric Ranking:** Models are ranked across ALL metrics for robustness, then the best average rank wins per product.
     """)
     
+    # Model Selection Approaches
+    st.markdown("### 🔄 **Model Selection Approaches**")
     st.markdown("""
-    **Smart Product-by-Product Selection (Recommended):**
-    1. **Run all models** on each data product individually
-    2. **Test accuracy** using backtesting for each model-product combination
-    3. **Calculate all metrics** (WAPE, SMAPE, MASE, RMSE) for each model's predictions per product
-    4. **Rank models** across all four metrics for each specific product
-    5. **Winner per product:** Model with the **best average ranking across all metrics** for that specific product is selected
-    6. **Hybrid approach:** Combine the best models for each product into one optimized forecast
+    **🏆 Best per Product (Backtesting) - Recommended:**
+    - **How it works:** Each product uses its individually best-performing model based on rigorous backtesting
+    - **Selection criteria:** Pure backtesting WAPE with strict eligibility requirements
+    - **Tie-breaking:** Mean WAPE → p75 WAPE → MASE → recent worst-month error
+    - **Business-aware:** Polynomial models deprioritized for revenue forecasting
+    - **Result:** Hybrid forecast combining the optimal model for each product
     
-    **Traditional Overall Selection (Alternative):**
-    1. **Run all models** on your historical data
-    2. **Test accuracy** using validation (unseen historical data)
-    3. **Calculate average WAPE** across all products for each model
-    4. **Winner:** Model with **lowest average WAPE** across all products
-    5. **Why this works:** The most accurate on historical data is likely most accurate for future predictions
+    **📊 Best per Product (Standard) - Statistical:**
+    - **How it works:** Multi-metric ranking approach across all validation metrics
+    - **Selection criteria:** Best average rank across WAPE, SMAPE, MASE, and RMSE
+    - **Advantages:** More robust to outliers, considers multiple performance dimensions
+    - **Use case:** When backtesting history is insufficient or for exploratory analysis
     
-    **Why Product-by-Product is Better:**
-    - Different products may have different patterns (seasonal vs. trending)
-    - One model might excel at growth patterns, another at seasonal patterns
-    - Optimizes accuracy for each specific data pattern
-    - Often achieves lower overall error than any single model
+    **🎯 Individual Model Selection:**
+    - **Single model:** Choose one model (SARIMA, ETS, Prophet, etc.) for all products
+    - **Use case:** When you want consistency across products or have domain expertise
+    - **Advantage:** Simpler interpretation and deployment
     """)
 
-    # Selection modes and backtesting guide
-    st.markdown("### 🧭 **Smart Backtesting & Model Selection**")
+    # Backtesting methodology
+    st.markdown("### 🧪 **Rigorous Backtesting Methodology**")
     
     st.markdown("""
-    **Backtesting‑Only Selection (WAPE‑first):**
-    - Models are selected per product strictly by cross‑validated backtesting WAPE
-    - Scoring: mean WAPE → p75 WAPE → MASE; unstable models are excluded (p95 > 2× mean)
-    - Eligibility: ≥24 months history and ≥2 folds (h=6); must beat Seasonal‑Naive by ≥5% WAPE and have MASE < 1.0
-    - If data is too short, we provisionally use Seasonal‑Naive (or ETS[A,A,A])
+    **🔄 Walk-Forward Validation Process:**
+    1. **Expanding windows:** Train on increasing historical data, predict forward
+    2. **Step size:** 6-month steps to capture multiple seasonal cycles  
+    3. **Gap handling:** 0-month gap by default (configurable for autocorrelation)
+    4. **Validation horizon:** 6-month forward predictions (mimics real forecasting)
+    5. **Multiple folds:** Creates multiple out-of-sample validation windows
+    
+    **✅ Strict Eligibility Criteria:**
+    - **History requirement:** ≥24 months of data for reliable backtesting
+    - **Minimum folds:** ≥2 backtesting windows for statistical significance
+    - **Stability check:** p95 WAPE ≤ 2× mean WAPE (excludes unstable models)
+    - **Baseline beating:** Must perform ≥5% better WAPE than Seasonal-Naive
+    - **MASE requirement:** MASE < 1.0 (better than seasonal baseline)
+    
+    **🎯 Selection Scoring (Backtesting Mode):**
+    1. **Primary:** Mean WAPE across all backtesting folds
+    2. **Tie-break 1:** p75 WAPE (75th percentile performance)
+    3. **Tie-break 2:** MASE (scaled error vs seasonal naive)
+    4. **Tie-break 3:** Recent worst-month error (recency bias)
+    
+    **🛡️ Business-Aware Safeguards:**
+    - **Polynomial deprioritization:** Poly-2/Poly-3 models used only if no alternatives
+    - **Revenue focus:** Optimized for consumptive business revenue patterns
+    - **Fallback logic:** Seasonal-Naive or ETS[A,A,A] when eligibility fails
     """)
     
-    st.markdown("### 🔎 **Backtesting Details**")
+    # Individual Models Section
+    st.markdown("### 🔮 **Individual Forecasting Models**")
     
     st.markdown("""
-    **How It Works:**
-    1. Expanding‑window backtests with step = 6 months, gap = 0, last 12–18 months
-    2. Compute WAPE/SMAPE/MASE/RMSE; selection uses WAPE only (others for tie‑breaks/diagnostics)
-    3. Cache results for speed and determinism; single‑threaded fits
-    4. Fallback to Seasonal‑Naive when CV cannot be run
-    """)
+    **🏆 Best per Product (Backtesting)**
+    - **What it is:** Intelligent hybrid combining the best-performing model per product
+    - **Selection method:** Rigorous walk-forward backtesting with strict eligibility
+    - **Advantages:** Optimizes for each product's unique patterns, highest accuracy
+    - **Business focus:** Deprioritizes polynomial models for revenue forecasting
+    - **WAPE display:** Average of selected models' backtesting performance
     
-    # Models Section
-    st.markdown("### 🔮 **Forecasting Models Explained**")
-    st.markdown(
-        "**Best per Product ⭐**: Smart hybrid approach that uses the most accurate model for each data product individually. Combines multiple models for optimal results. With business-aware selection enabled, prioritizes seasonally-aware models over polynomial fits for revenue forecasting.\n\n"
-        "**SARIMA**: Advanced statistical time series model with seasonal patterns. Uses both AIC and BIC criteria for optimal parameter selection, then chooses the best performer on validation data. Excellent for data with clear seasonal trends and sufficient history.\n\n"
-        "**ETS (Exponential Smoothing)**: Decomposes data into Error, Trend, and Seasonality. Automatically adapts to your data patterns. Great for business data with growth trends.\n\n"
-        "**Prophet**: Facebook's business-focused model with optional holiday effects and growth assumptions. Can include US and worldwide holidays for better accuracy around holiday periods. Designed specifically for business forecasting scenarios.\n\n"
-        "**Auto-ARIMA**: Automated statistical modeling that finds the best ARIMA configuration. Smart parameter selection with business validation.\n\n"
-        "**LightGBM**: Machine learning model using gradient boosting. Captures complex non-linear patterns using historical lags and features.\n\n"
-        "**Polynomial (Poly-2/3)**: Pure mathematical trend fitting using 2nd or 3rd degree curves. ⚠️ **Business Note**: While these may show better MAPE on historical data, they can be problematic for consumptive businesses where revenue recognition depends on daily patterns and business cycles. Use with caution for revenue forecasting.\n\n"
-        "**Interactive Adjustments**: Apply custom growth/haircut percentages to any product starting from any future month. Perfect for management overrides and scenario planning."
-    )
+    **📊 Best per Product (Standard)**  
+    - **What it is:** Multi-metric statistical selection across all validation measures
+    - **Selection method:** Best average rank across WAPE, SMAPE, MASE, RMSE
+    - **Advantages:** More robust to outliers, works with shorter history
+    - **Use case:** When backtesting eligibility is insufficient
+    
+    **📈 SARIMA (Seasonal AutoRegressive Integrated Moving Average)**
+    - **Strengths:** Excellent for seasonal business data with clear patterns
+    - **Our approach:** Dual AIC/BIC optimization, then validation-based final selection
+    - **Best for:** Revenue with strong seasonal cycles, sufficient history (24+ months)
+    - **Limitations:** Requires stable seasonal patterns, computationally intensive
+    
+    **⚡ ETS (Exponential Smoothing)**
+    - **Strengths:** Automatically adapts to Error, Trend, Seasonality components
+    - **Our approach:** Auto-optimization of smoothing parameters
+    - **Best for:** Growing businesses with evolving seasonal patterns
+    - **Limitations:** May struggle with abrupt changes or complex seasonality
+    
+    **🚀 Prophet (Facebook's Business Forecaster)**
+    - **Strengths:** Built for business data, handles holidays and growth changes
+    - **Our approach:** Optional holiday effects (US/worldwide), growth assumptions
+    - **Best for:** Revenue affected by holidays, businesses with growth inflections
+    - **Limitations:** Can be overconfident in trend extrapolation
+    
+    **🤖 Auto-ARIMA**
+    - **Strengths:** Automated statistical modeling with parameter optimization
+    - **Our approach:** Smart parameter search with business validation
+    - **Best for:** Stationary data with complex autocorrelation structures
+    - **Limitations:** May miss seasonal patterns in shorter series
+    
+    **🌳 LightGBM (Gradient Boosting)**
+    - **Strengths:** Captures complex non-linear patterns, handles multiple features
+    - **Our approach:** Engineered lag features, calendar effects, hyperparameter tuning
+    - **Best for:** Complex businesses with multiple driving factors
+    - **Limitations:** Black box, requires sufficient training data
+    
+    **📐 Polynomial Models (Poly-2/Poly-3)**
+    - **What they are:** Pure mathematical trend fitting (quadratic/cubic curves)
+    - **⚠️ Business warning:** Can create unrealistic growth projections
+    - **Our safeguards:** Deprioritized in business-aware selection
+    - **Use case:** Only when all other models fail eligibility requirements
+    
+    **🔧 Interactive Adjustments**
+    - **Purpose:** Management overrides and scenario planning
+    - **How it works:** Apply growth/haircut percentages starting from any future month
+    - **Use cases:** Market condition changes, business strategy shifts, conservative planning
+    """)
 
 
 def render_footer():
