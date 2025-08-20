@@ -1,7 +1,7 @@
 """
 Metrics and evaluation functions for forecasting models.
 
-Contains implementations of MAPE, SMAPE, MASE, RMSE and other
+Contains implementations of WAPE (weighted APE), SMAPE, MASE, RMSE and other
 evaluation metrics for time series forecasting.
 """
 
@@ -9,6 +9,23 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_squared_error
 from datetime import datetime, timedelta
+
+
+def wape(actual, forecast):
+    """Weighted Absolute Percentage Error (WAPE).
+
+    Returns a scale-sensitive error aligned to revenue (dollar-weighted):
+        sum(|A - F|) / sum(|A|)
+
+    For all-zero actuals, returns 0.0 if forecasts are all zero else +inf.
+    """
+    import numpy as np  # Local import to avoid circulars in edge tooling
+    actual = np.asarray(actual, dtype=float)
+    forecast = np.asarray(forecast, dtype=float)
+    denom = np.sum(np.abs(actual))
+    if not np.isfinite(denom) or denom == 0:
+        return 0.0 if np.allclose(actual, forecast, atol=1e-12) else np.inf
+    return float(np.sum(np.abs(actual - forecast)) / denom)
 
 
 def smape(actual, forecast):
@@ -99,7 +116,7 @@ def _robust_mape(actual, forecast):
 
 def calculate_validation_metrics(actual, forecast, train_data, seasonal_period: int = 12):
     """
-    Calculate all validation metrics (MAPE, SMAPE, MASE, RMSE).
+    Calculate all validation metrics (WAPE, SMAPE, MASE, RMSE).
     
     Args:
         actual: Actual validation values
@@ -107,38 +124,31 @@ def calculate_validation_metrics(actual, forecast, train_data, seasonal_period: 
         train_data: Training data for seasonal naive calculation
     
     Returns:
-        Tuple of (mape, smape, mase, rmse)
+        Tuple of (wape, smape, mase, rmse) — return arity/order unchanged (slot 0 now WAPE)
     """
-    # Convert to numpy arrays
-    actual = np.array(actual)
-    forecast = np.array(forecast)
-    train_data = np.array(train_data)
-    
-    # Robust MAPE ignoring zero explosions
+    # PRIMARY (WAPE)
     try:
-        mape_val = _robust_mape(actual, forecast)
+        wape_val = wape(actual, forecast)
     except Exception:
-        mape_val = np.inf
-    
-    # Calculate SMAPE
+        wape_val = np.inf
+
+    # Keep the others for diagnostics
     try:
         smape_val = smape(actual, forecast)
     except Exception:
         smape_val = 1.0
-    
-    # Calculate correct MASE scaling
+
     try:
         mase_val = mase(actual, forecast, train_data, seasonal_period=seasonal_period)
     except Exception:
         mase_val = np.nan
-    
-    # Calculate RMSE
+
     try:
         rmse_val = rmse(actual, forecast)
     except Exception:
         rmse_val = np.nan
-    
-    return mape_val, smape_val, mase_val, rmse_val
+
+    return wape_val, smape_val, mase_val, rmse_val
 
 
 def calculate_forecast_accuracy_summary(results_dict):
@@ -195,52 +205,56 @@ def calculate_forecast_accuracy_summary(results_dict):
 def walk_forward_validation(series, model_fitting_func, window_size=24, step_size=1, horizon=12,
                            model_params=None, diagnostic_messages=None, gap: int = 0):
     """
-    Perform walk-forward validation for more robust MAPE calculation.
-    
+    Expanding-window cross-validation for robust WAPE calculation.
+
+    - Uses expanding train window starting at len == max(window_size, 24)
+    - Advances by step_size each fold; fixed horizon per fold
+    - Returns fold-level WAPE list and summary stats (mean, p75, p95), plus MASE per fold
+
     Args:
-        series: Time series data
-        model_fitting_func: Function that takes (train_data, **model_params) and returns fitted model
-    window_size: Training window size in months
-    step_size: How many months to advance window each iteration
-    horizon: Forecast horizon for each iteration (must be >= 1)
-    gap: Optional number of periods between the end of train and start of validation to reduce leakage
-        model_params: Dictionary of parameters to pass to model fitting function
-        diagnostic_messages: List to append diagnostic messages
-    
+        series: Pandas Series of monthly values
+        model_fitting_func: Callable(train_data, **params) -> fitted model with forecast()/predict()
+        window_size: minimum training size (months), default 24
+        step_size: fold increment (months), set equal to validation_horizon for policy
+        horizon: validation horizon per fold (months)
+        gap: gap between train end and validation start
+        model_params: optional dict of params for fitting function
+        diagnostic_messages: list for status logs
+
     Returns:
-        Dictionary with validation results and metrics
+        dict with keys: mean_mape, p75_mape, p95_mape, mean_mase, iterations, mape_scores, mase_scores, validation_results
     """
     if model_params is None:
         model_params = {}
     
-    mape_scores = []
+    mape_scores = []  # WAPE per fold
     smape_scores = []
     rmse_scores = []
+    mase_scores = []
     validation_results = []
     
     # Ensure we have enough data for walk-forward validation
-    min_required = window_size + max(0, gap) + horizon
+    min_train = max(24, int(window_size))
+    min_required = min_train + max(0, gap) + horizon
     if len(series) < min_required:
         if diagnostic_messages:
             diagnostic_messages.append(f"⚠️ Walk-forward validation: Need {min_required} months, have {len(series)}. Using single split.")
         return None
-    
-    max_iterations = max(0, (len(series) - window_size - max(0, gap) - horizon) // step_size + 1)
-    # ROBUSTNESS FIX: Remove arbitrary 10-iteration cap to allow more thorough validation
-    # Cap at reasonable maximum based on data length to prevent excessive computation
-    max_reasonable_iterations = min(50, len(series) // 6)  # At most 50 iterations or series_length/6
+
+    # Expanding window: train_end grows by step_size; start at 0
+    max_iterations = max(0, (len(series) - min_train - max(0, gap) - horizon) // step_size + 1)
+    max_reasonable_iterations = min(50, len(series) // max(1, step_size))
     max_iterations = min(max_reasonable_iterations, max_iterations)
-    
-    for i in range(0, max_iterations * step_size, step_size):
-        start_idx = i
-        train_end_idx = start_idx + window_size
+
+    for i in range(max_iterations):
+        train_end_idx = min_train + i * step_size
         val_start_idx = train_end_idx + max(0, gap)
         val_end_idx = val_start_idx + horizon
 
         if val_end_idx > len(series):
             break
 
-        train_data = series.iloc[start_idx:train_end_idx]
+        train_data = series.iloc[:train_end_idx]
         actual_data = series.iloc[val_start_idx:val_end_idx]
 
         try:
@@ -253,24 +267,27 @@ def walk_forward_validation(series, model_fitting_func, window_size=24, step_siz
             else:
                 continue
                 
-            # Calculate metrics
-            mape = _robust_mape(actual_data, forecast)
+            # Calculate metrics (slot 0 now WAPE)
+            mape = wape(actual_data, forecast)
             smape_val = smape(actual_data, forecast)
             rmse_val = rmse(actual_data, forecast)
+            mase_val = mase(actual_data, forecast, train_data, seasonal_period=12)
             
             mape_scores.append(mape)
             smape_scores.append(smape_val)
             rmse_scores.append(rmse_val)
+            mase_scores.append(mase_val)
             
             validation_results.append({
                 'iteration': len(mape_scores),
-                'train_start': series.index[start_idx],
+                'train_start': series.index[0],
                 'train_end': series.index[train_end_idx - 1],
                 'val_start': series.index[val_start_idx],
                 'val_end': series.index[val_end_idx - 1],
                 'mape': mape,
                 'smape': smape_val,
-                'rmse': rmse_val
+                'rmse': rmse_val,
+                'mase': mase_val
             })
 
         except Exception as e:
@@ -281,23 +298,49 @@ def walk_forward_validation(series, model_fitting_func, window_size=24, step_siz
     if not mape_scores:
         return None
     
+    mape_arr = np.array(mape_scores)
+    # Recency‑weighted mean WAPE (double weight on the most recent fold)
+    try:
+        n_folds = len(mape_arr)
+        if n_folds > 0:
+            # Exponential weights from oldest->newest with ratio 2
+            exponents = np.linspace(0, 1, n_folds)
+            weights = np.power(2.0, exponents)
+            rw_mape = float(np.sum(weights * mape_arr) / np.sum(weights))
+        else:
+            rw_mape = float(np.mean(mape_arr)) if mape_arr.size else np.inf
+    except Exception:
+        rw_mape = float(np.mean(mape_arr)) if mape_arr.size else np.inf
+    # Recent p75 computed over the most recent half of folds (>=2)
+    try:
+        recent_k = max(2, int(max(1, len(mape_arr)) * 0.5))
+        recent_slice = mape_arr[-recent_k:]
+        recent_p75 = float(np.percentile(recent_slice, 75)) if recent_slice.size else float(np.percentile(mape_arr, 75))
+    except Exception:
+        recent_p75 = float(np.percentile(mape_arr, 75)) if mape_arr.size else np.inf
     results = {
-        'mean_mape': np.mean(mape_scores),
-        'std_mape': np.std(mape_scores),
-        'median_mape': np.median(mape_scores),
-        'min_mape': np.min(mape_scores),
-        'max_mape': np.max(mape_scores),
-        'mean_smape': np.mean(smape_scores),
-        'mean_rmse': np.mean(rmse_scores),
+        'mean_mape': float(np.mean(mape_arr)),
+        'std_mape': float(np.std(mape_arr)),
+        'median_mape': float(np.median(mape_arr)),
+        'min_mape': float(np.min(mape_arr)),
+        'max_mape': float(np.max(mape_arr)),
+        'recent_weighted_mape': rw_mape,
+        'recent_p75_mape': recent_p75,
+        'p75_mape': float(np.percentile(mape_arr, 75)),
+        'p95_mape': float(np.percentile(mape_arr, 95)),
+        'mean_smape': float(np.mean(smape_scores)),
+        'mean_rmse': float(np.mean(rmse_scores)),
+        'mean_mase': float(np.nanmean(mase_scores)) if mase_scores else np.nan,
         'iterations': len(mape_scores),
         'validation_results': validation_results,
-        'mape_scores': mape_scores
+        'mape_scores': mape_scores,
+        'mase_scores': mase_scores
     }
     
     if diagnostic_messages:
         diagnostic_messages.append(
-            f"📊 Walk-forward validation: {len(mape_scores)} iterations (gap={max(0, gap)}), "
-            f"Mean MAPE: {np.mean(mape_scores):.1%} ± {np.std(mape_scores):.1%}"
+            f"📊 Walk-forward CV: {len(mape_scores)} folds (gap={max(0, gap)}), "
+            f"Mean WAPE: {np.mean(mape_scores):.1%} (p75 {np.percentile(mape_arr,75):.1%}, p95 {np.percentile(mape_arr,95):.1%})"
         )
     
     return results
@@ -363,8 +406,8 @@ def time_series_cross_validation(series, model_fitting_func, n_splits=5, horizon
             else:
                 continue
                 
-            # Calculate metrics
-            mape = _robust_mape(actual_data, forecast)
+            # Calculate metrics (slot 0 now WAPE)
+            mape = wape(actual_data, forecast)
             mape_scores.append(mape)
             
             validation_results.append({
@@ -396,7 +439,7 @@ def time_series_cross_validation(series, model_fitting_func, n_splits=5, horizon
     if diagnostic_messages:
         diagnostic_messages.append(
             f"🔄 Cross-validation: {len(mape_scores)} folds (gap={max(0, gap)}), "
-            f"Mean MAPE: {np.mean(mape_scores):.1%} ± {np.std(mape_scores):.1%}"
+            f"Mean WAPE: {np.mean(mape_scores):.1%} ± {np.std(mape_scores):.1%}"
         )
     
     return results
@@ -418,8 +461,8 @@ def enhanced_mape_analysis(actual, forecast, dates=None, product_name=""):
     actual = np.array(actual)
     forecast = np.array(forecast)
     
-    # Calculate basic MAPE
-    mape = _robust_mape(actual, forecast)
+    # Calculate basic WAPE (stored under legacy 'mape' key for compatibility)
+    mape = wape(actual, forecast)
     
     # Calculate period-by-period percentage errors
     mask = actual != 0  # Avoid division by zero

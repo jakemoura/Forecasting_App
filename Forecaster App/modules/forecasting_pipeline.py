@@ -20,9 +20,10 @@ from .models import (
     apply_trend_aware_forecasting, fit_final_sarima_model, fit_best_sarima, fit_best_lightgbm,
     select_business_aware_best_model, get_seasonality_aware_split, HAVE_PMDARIMA, HAVE_PROPHET, HAVE_LGBM,
     create_ets_fitting_function, create_sarima_fitting_function, create_auto_arima_fitting_function,
-    create_prophet_fitting_function, create_polynomial_fitting_function
+    create_prophet_fitting_function, create_polynomial_fitting_function, fit_seasonal_naive, ENABLE_PROPHET, ENABLE_LGBM,
+    create_lightgbm_fitting_function
 )
-from .metrics import calculate_validation_metrics, comprehensive_validation_suite
+from .metrics import calculate_validation_metrics, comprehensive_validation_suite, walk_forward_validation
 from .utils import coerce_month_start
 from .ui_components import fy
 
@@ -139,14 +140,14 @@ def _maybe_apply_drift(series: pd.Series, forecast, model_name: str, product: st
 def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_statistical_validation=True,
                             apply_business_adjustments=False, business_growth_assumption=0,
                             market_multiplier=1.0, market_conditions="Stable",
-                            enable_business_aware_selection=False, enable_prophet_holidays=False,
+                            enable_business_aware_selection=True, enable_prophet_holidays=False,
                             enable_backtesting=True,
-                            use_backtesting_selection: bool = False,
+                            use_backtesting_selection: bool = True,
                             backtest_months: int = 12,
-                            backtest_gap: int = 1,
-                            validation_horizon: int = 12,
+                            backtest_gap: int = 0,
+                            validation_horizon: int = 6,
                             fiscal_year_start_month: int = 1,
-                            enable_per_product_drift: bool = True,
+                            enable_per_product_drift: bool = False,
                             drift_min_pct: float = 0.005,
                             drift_max_pct: float = 0.03,
                             drift_forecast_cv_threshold: float = 0.01,
@@ -211,6 +212,10 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
     # Count valid products for progress tracking
     diagnostic_messages.append(f"🔍 **Data Validation**: Analyzing data quality for {len(products)} products...")
     valid_products = _get_valid_products(raw_data, diagnostic_messages)
+    # Enforce core model set of five when available
+    enforced_models = [m for m in ["ETS", "SARIMA", "Seasonal-Naive", "Auto-ARIMA", "Prophet", "LightGBM"] if m in models_selected or m in ["ETS","SARIMA","Seasonal-Naive","Auto-ARIMA","Prophet","LightGBM"]]
+    # Keep only models that user/environment can actually run (presence handled upstream)
+    models_selected = list(dict.fromkeys([m for m in models_selected if m in enforced_models] + enforced_models))
     total = len(models_selected) * len(valid_products)
     
     if total == 0:
@@ -222,6 +227,22 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
     # Initialize progress tracking
     prog = st.progress(0.0, text="Running models…")
     done = 0
+    
+    # Coerce selected models to allowed defaults + Auto-ARIMA if available
+    # Respect user selections but prune unsupported/forbidden options
+    try:
+        pruned: list[str] = []
+        for m in models_selected:
+            if m == "Poly-3":
+                diagnostic_messages.append("⚠️ Poly-3 disabled by policy; keeping Poly-2 only.")
+                continue
+            if m == "Auto-ARIMA" and not HAVE_PMDARIMA:
+                diagnostic_messages.append("⚠️ Auto-ARIMA not available (pmdarima missing).")
+                continue
+            pruned.append(m)
+        models_selected = pruned or ["ETS", "SARIMA", "Seasonal-Naive"]
+    except Exception:
+        pass
     
     # Process each product
     diagnostic_messages.append(f"🔄 **Starting Product Processing**: Processing {len(valid_products)} products sequentially...")
@@ -268,6 +289,14 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
             mases.setdefault(m, [])
             rmses.setdefault(m, [])
         
+        # Ensure results dicts include Seasonal-Naive container if selected
+        if "Seasonal-Naive" in models_selected:
+            results.setdefault("Seasonal-Naive", [])
+            mapes.setdefault("Seasonal-Naive", [])
+            smapes.setdefault("Seasonal-Naive", [])
+            mases.setdefault("Seasonal-Naive", [])
+            rmses.setdefault("Seasonal-Naive", [])
+        
         # Run each model
         done = _run_models_for_product(
             product, series, train, val, future_idx, act_df,
@@ -301,19 +330,80 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
     # Compute a BACKTESTING-driven selection alternative when backtesting results exist
     best_models_per_product_backtesting: dict[str, str] = {}
     best_mapes_per_product_backtesting: dict[str, float] = {}
+    best_model_reasons_backtesting: dict[str, str] = {}
     if backtesting_results:
         for product in list(best_models_per_product_standard.keys()):
             per_model = backtesting_results.get(product, {})
-            # Score each model by basic MAPE from backtesting validation
+            # Enforce strict eligibility policy and score by backtesting-only WAPE (legacy 'mape')
             def score_validation(v):
                 if not v:
-                    return np.inf
-                basic = v.get('basic_validation', {})
-                m = basic.get('mape', np.inf)
-                return m if np.isfinite(m) else np.inf
+                    return (np.inf, np.inf, 9e9)
+                bt = v.get('backtesting_validation') or {}
+                # Eligibility: at least 2 folds, mean_mase < 1.0, relative WAPE improvement vs seasonal-naive >= 5%, p95 <= 2x mean
+                # We expect aggregation to include these; otherwise, mark ineligible.
+                folds = bt.get('folds', bt.get('iterations'))
+                mean_mase = bt.get('mean_mase')
+                p95 = bt.get('p95_mape', np.nan)
+                # Prefer recency‑weighted mean if present
+                m = bt.get('recent_weighted_mape', bt.get('mape', np.inf))
+                # Beat seasonal naive if comparative present
+                rel_ok = True
+                try:
+                    naive = per_model.get('Seasonal-Naive', {}).get('backtesting_validation', {})
+                    naive_wape = naive.get('recent_weighted_mape', naive.get('mape', np.inf))
+                    if np.isfinite(m) and np.isfinite(naive_wape) and naive_wape > 0:
+                        rel_ok = (naive_wape - m) / naive_wape >= 0.05
+                except Exception:
+                    rel_ok = True
+                if folds is not None and int(folds) < 2:
+                    return (np.inf, np.inf, 9e9)
+                if mean_mase is not None and np.isfinite(mean_mase) and mean_mase >= 1.0:
+                    return (np.inf, np.inf, 9e9)
+                if np.isfinite(p95) and np.isfinite(m) and p95 > 2.0 * m:
+                    return (np.inf, np.inf, 9e9)
+                if not rel_ok:
+                    return (np.inf, np.inf, 9e9)
+                wape_mean = m if np.isfinite(m) else np.inf
+                # If fold stats exist elsewhere, read p75; otherwise use mean
+                p75 = bt.get('recent_p75_mape', bt.get('p75_mape', wape_mean))
+                mase_val = bt.get('mase', bt.get('mean_mase', np.nan))
+                return (wape_mean, p75, np.nan_to_num(mase_val, nan=9e9))
+
+            # helper to provide eligibility reason for tooltips
+            def eligibility_reason(name: str, v):
+                if not v:
+                    return False, "no backtesting results", (np.inf, np.inf, 9e9)
+                bt = v.get('backtesting_validation') or {}
+                folds = bt.get('folds', bt.get('iterations'))
+                mean_mase = bt.get('mean_mase')
+                p95 = bt.get('p95_mape', np.nan)
+                m = bt.get('mape', np.inf)
+                p75 = bt.get('p75_mape', m)
+                mase_val = bt.get('mase', bt.get('mean_mase', np.nan))
+                # seasonal-naive relative improvement
+                rel_ok = True
+                rel_msg = ""
+                try:
+                    naive = per_model.get('Seasonal-Naive', {}).get('backtesting_validation', {})
+                    naive_wape = naive.get('recent_weighted_mape', naive.get('mape', np.inf))
+                    if np.isfinite(m) and np.isfinite(naive_wape) and naive_wape > 0:
+                        rel_ok = (naive_wape - m) / naive_wape >= 0.05
+                        if not rel_ok:
+                            rel_msg = f"<5% better than Seasonal‑Naive (Δ={(naive_wape - m)/naive_wape:.1%})"
+                except Exception:
+                    rel_ok = True
+                if folds is not None and int(folds) < 2:
+                    return False, "<2 CV folds", (m, p75, np.nan_to_num(mase_val, nan=9e9))
+                if mean_mase is not None and np.isfinite(mean_mase) and mean_mase >= 1.0:
+                    return False, "MASE ≥ 1.0 (did not beat seasonal‑naive)", (m, p75, np.nan_to_num(mase_val, nan=9e9))
+                if np.isfinite(p95) and np.isfinite(m) and p95 > 2.0 * m:
+                    return False, "p95 WAPE > 2× mean (unstable)", (m, p75, np.nan_to_num(mase_val, nan=9e9))
+                if not rel_ok:
+                    return False, rel_msg or "<5% better than Seasonal‑Naive", (m, p75, np.nan_to_num(mase_val, nan=9e9))
+                return True, "eligible", (m, p75, np.nan_to_num(mase_val, nan=9e9))
             if per_model:
                 pairs = [(m, score_validation(res)) for m, res in per_model.items()]
-                finite_pairs = [(m, s) for m, s in pairs if np.isfinite(s)] or pairs
+                finite_pairs = [(m, s) for m, s in pairs if np.isfinite(s[0])] or pairs
 
                 # Separate non-polynomial and polynomial candidates
                 poly_names = {"Poly-2", "Poly-3"}
@@ -328,79 +418,77 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
                             # Informative diagnostic when a poly looked good but was excluded
                             best_poly_model, best_poly_score = min(polys, key=lambda x: x[1])
                             diagnostic_messages.append(
-                                f"🏢 {product}: Business-aware selection excluded polynomial {best_poly_model} (MAPE {best_poly_score:.1%}); using {best_model} (MAPE {best_score:.1%})."
+                                f"🏢 {product}: Business-aware selection excluded polynomial {best_poly_model} (WAPE {best_poly_score[0]:.1%}); using {best_model} (WAPE {best_score[0]:.1%})."
                             )
                     else:
                         # No non-poly candidates; fall back to overall best but warn
                         best_model, best_score = min(finite_pairs, key=lambda x: x[1])
                         if best_model in poly_names:
                             diagnostic_messages.append(
-                                f"⚠️ {product}: No non-polynomial candidates available for backtesting; falling back to {best_model} (MAPE {best_score:.1%})."
+                                f"⚠️ {product}: No non-polynomial candidates available for backtesting; falling back to {best_model} (WAPE {best_score[0]:.1%})."
                             )
                 else:
-                    # Default behavior: allow polynomial only if it beats best non-poly by a large margin
-                    POLY_REL_IMPROVEMENT_REQ = 0.50  # require >=50% lower MAPE to choose poly
+                    # Deprioritize polynomial: only pick poly if EVERYTHING else fails eligibility
                     if non_poly:
-                        best_non_poly_model, best_non_poly_score = min(non_poly, key=lambda x: x[1])
-                        chosen_model, chosen_score = best_non_poly_model, best_non_poly_score
-                        if polys:
-                            best_poly_model, best_poly_score = min(polys, key=lambda x: x[1])
-                            if np.isfinite(best_poly_score) and best_poly_score < best_non_poly_score * (1 - POLY_REL_IMPROVEMENT_REQ):
-                                chosen_model, chosen_score = best_poly_model, best_poly_score
-                                diagnostic_messages.append(
-                                    f"⚠️ {product}: Selected polynomial {best_poly_model} by backtesting (MAPE {best_poly_score:.1%}) — exceeds {int(POLY_REL_IMPROVEMENT_REQ*100)}% improvement over best non‑poly {best_non_poly_model} (MAPE {best_non_poly_score:.1%})."
-                                )
-                            else:
-                                if polys:
-                                    diagnostic_messages.append(
-                                        f"🏢 {product}: Deprioritized polynomial {best_poly_model} (MAPE {best_poly_score:.1%}) in favor of {best_non_poly_model} (MAPE {best_non_poly_score:.1%}); requires ≥{int(POLY_REL_IMPROVEMENT_REQ*100)}% improvement to pick poly."
-                                    )
-                        best_model, best_score = chosen_model, chosen_score
+                        best_model, best_score = min(non_poly, key=lambda x: x[1])
                     else:
+                        # only polys available
                         best_model, best_score = min(finite_pairs, key=lambda x: x[1])
 
                 best_models_per_product_backtesting[product] = best_model
-                best_mapes_per_product_backtesting[product] = float(best_score)
+                best_mapes_per_product_backtesting[product] = float(best_score[0])
+                # Build reason string for tooltip
+                try:
+                    # Evaluate eligibility and capture any exclusions
+                    reasons_excluded = []
+                    for name, res in per_model.items():
+                        ok, reason_txt, sc = eligibility_reason(name, res)
+                        if not ok:
+                            # if this excluded model would have had lower mean WAPE than winner, highlight
+                            try:
+                                if np.isfinite(sc[0]) and sc[0] < best_score[0]:
+                                    reasons_excluded.append(f"{name}: {reason_txt}")
+                            except Exception:
+                                pass
+                    reason_main = f"Chosen by lowest mean WAPE among eligible models: {best_model} (mean {best_score[0]:.1%}, p75 {best_score[1]:.1%}, MASE {best_score[2]:.2f})."
+                    if reasons_excluded:
+                        reason_main += " Excluded better-WAPE candidates due to: " + "; ".join(reasons_excluded[:3])
+                    best_model_reasons_backtesting[product] = reason_main
+                except Exception:
+                    best_model_reasons_backtesting[product] = f"Chosen by lowest mean WAPE: {best_model}."
 
     # Apply UI toggle: if user chose backtesting selection, use that mapping as the primary "best" mapping
     if use_backtesting_selection and best_models_per_product_backtesting:
         best_models_per_product = dict(best_models_per_product_backtesting)
         best_mapes_per_product = dict(best_mapes_per_product_backtesting)
-        diagnostic_messages.append("🔁 Using backtesting-driven model selection per product (toggle on)")
+        diagnostic_messages.append("🔁 Using backtesting-driven model selection per product (WAPE-based, CV‑only)")
+        # Store a compact method mix for UI KPI
+        try:
+            from collections import Counter
+            cnt = Counter(best_models_per_product_backtesting.values())
+            total = sum(cnt.values()) or 1
+            mix_str = ", ".join([f"{m} {cnt[m]*100/total:.0f}%" for m in sorted(cnt, key=lambda k: -cnt[k])])
+            st.session_state.best_models_per_product_backtesting_mix = mix_str
+        except Exception:
+            st.session_state.best_models_per_product_backtesting_mix = None
     
-    # Create hybrid variants for toggle-able viewing
-    if best_models_per_product_standard:
-        results = _create_hybrid_model(results, best_models_per_product_standard, avg_mapes, best_mapes_per_product_standard, model_key_name="Best per Product (Standard)")
+    # Create only backtesting hybrid variant for viewing
     if best_models_per_product_backtesting:
         results = _create_hybrid_model(results, best_models_per_product_backtesting, avg_mapes, best_mapes_per_product_backtesting, model_key_name="Best per Product (Backtesting)")
 
     # Provide diagnostics list reference to global helper
     _DRIFT_DIAGNOSTICS_REF = diagnostic_messages
-    # Raw mix: per product choose lower MAPE between Standard & Backtesting (previously called Auto)
+    # Do not create Standard or Mix variants anymore per policy
     raw_models_per_product = None
-    if best_models_per_product_standard and best_models_per_product_backtesting:
-        raw_models_per_product = {}
-        raw_mapes_per_product: dict[str, float] = {}
-        for product in best_models_per_product_standard.keys():
-            std_m = best_mapes_per_product_standard.get(product, np.inf)
-            bt_m = best_mapes_per_product_backtesting.get(product, np.inf)
-            if np.isfinite(bt_m) and (not np.isfinite(std_m) or bt_m < std_m):
-                fallback = best_models_per_product_standard.get(product) or ""
-                chosen_name = best_models_per_product_backtesting.get(product) or fallback
-                raw_models_per_product[product] = chosen_name
-                raw_mapes_per_product[product] = float(bt_m)
-            else:
-                raw_models_per_product[product] = best_models_per_product_standard.get(product) or ""
-                raw_mapes_per_product[product] = float(std_m if np.isfinite(std_m) else bt_m)
-        if raw_models_per_product:
-            # Renamed user-facing key from Raw -> Mix (per-product blend of Standard vs Backtesting)
-            results = _create_hybrid_model(results, raw_models_per_product, avg_mapes, raw_mapes_per_product, model_key_name="Best per Product (Mix)")
 
     # Store both mappings in session for UI toggle/explanations
     try:
         st.session_state.best_models_per_product_standard = best_models_per_product_standard
         st.session_state.best_models_per_product_backtesting = (
             best_models_per_product_backtesting if best_models_per_product_backtesting else None
+        )
+        st.session_state.best_model_reasons_backtesting = (
+            best_model_reasons_backtesting if best_model_reasons_backtesting else {}
         )
         st.session_state.best_models_per_product_raw = (
             raw_models_per_product if raw_models_per_product else None
@@ -459,7 +547,7 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
                                 backtesting_success += 1
                                 mape = backtesting_validation.get('mape', 0)
                                 test_months = backtesting_validation.get('test_months', 0)
-                                diagnostic_messages.append(f"  ✅ **{model_name}**: Backtesting successful - MAPE: {mape*100:.1f}%, Test period: {test_months} months")
+                                diagnostic_messages.append(f"  ✅ **{model_name}**: Backtesting successful - WAPE: {mape*100:.1f}%, Test period: {test_months} months")
                             else:
                                 failed_backtests.append(f"{model_name} for {product_name}")
                                 error_msg = backtesting_validation.get('error', 'Unknown error')
@@ -589,8 +677,77 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             prog, done, total
         )
     
-    # Polynomial models
-    for poly_degree in [2, 3]:
+    # Seasonal-Naive baseline
+    if "Seasonal-Naive" in models_selected:
+        try:
+            diagnostic_messages.append(f"🔧 **Starting Seasonal-Naive**: Baseline repeat last-season values for {product}")
+            # Validation forecast
+            pv_naive = fit_seasonal_naive(train.values if hasattr(train, 'values') else train, len(val), seasonal_period=12)
+            val_mape, val_smape, val_mase, val_rmse = calculate_validation_metrics(val, pv_naive, train)
+            mapes["Seasonal-Naive"].append(val_mape)
+            smapes["Seasonal-Naive"].append(val_smape)
+            mases["Seasonal-Naive"].append(val_mase)
+            rmses["Seasonal-Naive"].append(val_rmse)
+
+            # Future forecast
+            pf_naive = fit_seasonal_naive(series.values if hasattr(series, 'values') else series, len(future_idx), seasonal_period=12)
+            pf_arr = np.asarray(pf_naive)
+            # Apply minimal validation/non-negativity
+            if enable_statistical_validation:
+                pf_arr = apply_statistical_validation(pf_arr, series, "Seasonal-Naive")
+            if apply_business_adjustments:
+                pf_arr = apply_business_adjustments_to_forecast(pf_arr, business_growth_assumption, market_multiplier)
+
+            fore_df = pd.DataFrame({"Product": product, "Date": future_idx, "ACR": pf_arr, "Type": "forecast"})
+            results["Seasonal-Naive"].append(pd.concat([act_df, fore_df], ignore_index=True))
+            diagnostic_messages.append(f"✅ Seasonal-Naive Product {product}: WAPE {val_mape:.1%}")
+
+            # Backtesting
+            if enable_backtesting:
+                try:
+                    if len(series) < (backtest_months + validation_horizon + backtest_gap + 12):
+                        required_months = backtest_months + validation_horizon + backtest_gap + 12
+                        diagnostic_messages.append(f"⚠️ **Seasonal-Naive Backtesting Skipped**: {product} - Insufficient data for {backtest_months} month backtesting (need {required_months} months, have {len(series)})")
+                    else:
+                        diagnostic_messages.append(f"🧪 **Seasonal-Naive Backtesting**: Starting backtesting for {product}")
+                        # Wrapper fitting function providing forecast()
+                        class _NaiveModel:
+                            def __init__(self, train_ts):
+                                self._train = train_ts
+                            def forecast(self, steps):
+                                return fit_seasonal_naive(self._train.values if hasattr(self._train, 'values') else self._train, steps, seasonal_period=12)
+                        def naive_fit_fn(train_ts, **kwargs):
+                            return _NaiveModel(train_ts)
+                        validation_results = comprehensive_validation_suite(
+                            actual=val.values,
+                            forecast=pv_naive,
+                            dates=val.index,
+                            product_name=product,
+                            series=series,
+                            model_fitting_func=naive_fit_fn,
+                            model_params={},
+                            diagnostic_messages=diagnostic_messages,
+                            backtest_months=backtest_months,
+                            backtest_gap=backtest_gap,
+                            validation_horizon=validation_horizon,
+                            fiscal_year_start_month=fiscal_year_start_month
+                        )
+                        if product not in backtesting_results:
+                            backtesting_results[product] = {}
+                        backtesting_results[product]["Seasonal-Naive"] = validation_results
+                        diagnostic_messages.append(f"✅ **Seasonal-Naive Backtesting**: Successfully completed for {product}")
+                except Exception as e:
+                    error_msg = str(e)[:100]
+                    diagnostic_messages.append(f"❌ **Seasonal-Naive Backtesting Failed**: {product} - Error: {error_msg}")
+                    if product not in backtesting_results:
+                        backtesting_results[product] = {}
+                    backtesting_results[product]["Seasonal-Naive"] = None
+        except Exception as e:
+            diagnostic_messages.append(f"❌ Seasonal-Naive Product {product}: {str(e)[:50]}")
+            _add_failed_metrics("Seasonal-Naive", mapes, smapes, mases, rmses)
+
+    # Polynomial models (only Poly-2 allowed; Poly-3 disabled via flag)
+    for poly_degree in [2]:
         model_name = f"Poly-{poly_degree}"
         if model_name in models_selected:
             diagnostic_messages.append(f"🔧 **Starting {model_name}**: Training {poly_degree}-degree polynomial model for {product}")
@@ -602,8 +759,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
                 backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total
             )
     
-    # Prophet model
-    if "Prophet" in models_selected and HAVE_PROPHET:
+    # Prophet model (enabled by flag)
+    if "Prophet" in models_selected and HAVE_PROPHET and ENABLE_PROPHET:
         diagnostic_messages.append(f"🔧 **Starting Prophet**: Training Facebook Prophet model for {product} (holidays: {enable_prophet_holidays})")
         done = _run_prophet_model(
             product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
@@ -624,8 +781,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total
         )
     
-    # LightGBM model
-    if "LightGBM" in models_selected and HAVE_LGBM:
+    # LightGBM model (enabled by flag)
+    if "LightGBM" in models_selected and HAVE_LGBM and ENABLE_LGBM:
         diagnostic_messages.append(f"🔧 **Starting LightGBM**: Training gradient boosting model for {product}")
         done = _run_lightgbm_model(
             product, series, train, val, future_idx, act_df, results, mapes, smapes, mases, rmses,
@@ -722,7 +879,7 @@ def _run_sarima_model(product, series, train, val, future_idx, act_df, results, 
                 df_f = pd.DataFrame({"Product": product, "Date": future_idx, "ACR": pf, "Type": "forecast"})
                 results["SARIMA"].append(pd.concat([act_df, df_f]))
                 
-                diagnostic_messages.append(f"✅ SARIMA Product {product}: Order {order}, Seasonal {seasonal_order}, {selection_criterion}: {criterion_value:.1f}, MAPE {best_validation_mape:.1%}")
+                diagnostic_messages.append(f"✅ SARIMA Product {product}: Order {order}, Seasonal {seasonal_order}, {selection_criterion}: {criterion_value:.1f}, WAPE {best_validation_mape:.1%}")
 
                 # Backtesting diagnostics for SARIMA
                 if enable_backtesting and pv_val is not None:
@@ -748,6 +905,49 @@ def _run_sarima_model(product, series, train, val, future_idx, act_df, results, 
                                 validation_horizon=validation_horizon,
                                 fiscal_year_start_month=fiscal_year_start_month
                             )
+                            # Expanding-window CV summary for selection
+                            try:
+                                cv = walk_forward_validation(
+                                    series=series,
+                                    model_fitting_func=sarima_fit_fn,
+                                    window_size=24,
+                                    step_size=validation_horizon,
+                                    horizon=validation_horizon,
+                                    model_params={},
+                                    diagnostic_messages=diagnostic_messages,
+                                    gap=backtest_gap
+                                )
+                                bt_dict = validation_results.get('backtesting_validation', {}) or {}
+                                if cv:
+                                    bt_dict.update({
+                                        'success': True,
+                                        'mape': cv.get('mean_mape'),
+                                        'p75_mape': cv.get('p75_mape'),
+                                        'p95_mape': cv.get('p95_mape'),
+                                        'mase': cv.get('mean_mase'),
+                                        'folds': cv.get('iterations'),
+                                        'backtest_period': backtest_months,
+                                        'validation_horizon': validation_horizon
+                                    })
+                                else:
+                                    bt_dict.update({
+                                        'success': False,
+                                        'error': 'insufficient data for CV',
+                                        'folds': 0,
+                                        'backtest_period': backtest_months,
+                                        'validation_horizon': validation_horizon
+                                    })
+                                validation_results['backtesting_validation'] = bt_dict
+                            except Exception as e:
+                                bt_dict = validation_results.get('backtesting_validation', {}) or {}
+                                bt_dict.update({
+                                    'success': False,
+                                    'error': str(e)[:100],
+                                    'folds': 0,
+                                    'backtest_period': backtest_months,
+                                    'validation_horizon': validation_horizon
+                                })
+                                validation_results['backtesting_validation'] = bt_dict
                             if product not in backtesting_results:
                                 backtesting_results[product] = {}
                             backtesting_results[product]["SARIMA"] = validation_results
@@ -757,7 +957,15 @@ def _run_sarima_model(product, series, train, val, future_idx, act_df, results, 
                         diagnostic_messages.append(f"❌ **SARIMA Backtesting Failed**: {product} - Error: {error_msg}")
                         if product not in backtesting_results:
                             backtesting_results[product] = {}
-                        backtesting_results[product]["SARIMA"] = None
+                        backtesting_results[product]["SARIMA"] = {
+                            'backtesting_validation': {
+                                'success': False,
+                                'error': error_msg,
+                                'backtest_period': backtest_months,
+                                'validation_horizon': validation_horizon,
+                                'folds': 0
+                            }
+                        }
             else:
                 diagnostic_messages.append(f"❌ SARIMA Product {product}: Final model training failed")
                 _add_failed_metrics("SARIMA", mapes, smapes, mases, rmses)
@@ -781,25 +989,31 @@ def _run_ets_model(product, series, train, val, future_idx, act_df, results, map
                   prog, done, total):
     """Run ETS model for a product."""
     try:
-        # Try multiplicative seasonal first
-        ets = ExponentialSmoothing(train, trend="add", seasonal="mul", seasonal_periods=12).fit()
-        pv = ets.forecast(len(val))
-        val_mape, val_smape, val_mase, val_rmse = calculate_validation_metrics(val, pv, train)
-        best_ets_config = ("mul", val_mape, val_smape, val_mase, val_rmse)
-        # Try additive seasonal if multiplicative performs poorly
-        if val_mape > 1.0:
+        # Robust fitting via helper to avoid hard failures on seasonal mode
+        best_ets_config = None
+        pv = None
+        # Try multiplicative, then additive, then no seasonality
+        for seasonal_type_try in ("mul", "add", None):
             try:
-                ets_alt = ExponentialSmoothing(train, trend="add", seasonal="add", seasonal_periods=12).fit()
-                pv_alt = ets_alt.forecast(len(val))
-                val_mape_alt, val_smape_alt, val_mase_alt, val_rmse_alt = calculate_validation_metrics(val, pv_alt, train)
-                if val_mape_alt < val_mape:
-                    pv = pv_alt
-                    best_ets_config = ("add", val_mape_alt, val_smape_alt, val_mase_alt, val_rmse_alt)
+                if seasonal_type_try is None:
+                    model = ExponentialSmoothing(train, trend="add", seasonal=None).fit()
+                else:
+                    model = ExponentialSmoothing(train, trend="add", seasonal=seasonal_type_try, seasonal_periods=12).fit()
+                pv_try = model.forecast(len(val))
+                m0, s0, ma0, r0 = calculate_validation_metrics(val, pv_try, train)
+                if best_ets_config is None or (np.isfinite(m0) and m0 < best_ets_config[1]):
+                    best_ets_config = (seasonal_type_try if seasonal_type_try is not None else "none", m0, s0, ma0, r0)
+                    pv = pv_try
             except Exception:
-                pass
+                continue
+        if best_ets_config is None or pv is None:
+            raise RuntimeError("ETS fitting failed for all seasonal types")
         # Fit final model on full series using the chosen seasonal type
         seasonal_type = best_ets_config[0]
-        ets_final = ExponentialSmoothing(series, trend="add", seasonal=seasonal_type, seasonal_periods=12).fit()
+        if seasonal_type == "none":
+            ets_final = ExponentialSmoothing(series, trend="add", seasonal=None).fit()
+        else:
+            ets_final = ExponentialSmoothing(series, trend="add", seasonal=seasonal_type, seasonal_periods=12).fit()
         pf = ets_final.forecast(len(future_idx))
         # Record metrics
         mapes["ETS"].append(best_ets_config[1])
@@ -837,6 +1051,49 @@ def _run_ets_model(product, series, train, val, future_idx, act_df, results, map
                         validation_horizon=validation_horizon,
                         fiscal_year_start_month=fiscal_year_start_month
                     )
+                    # Expanding-window CV summary for selection
+                    try:
+                        cv = walk_forward_validation(
+                            series=series,
+                            model_fitting_func=ets_fitting_func,
+                            window_size=24,
+                            step_size=validation_horizon,
+                            horizon=validation_horizon,
+                            model_params={},
+                            diagnostic_messages=diagnostic_messages,
+                            gap=backtest_gap
+                        )
+                        bt_dict = validation_results.get('backtesting_validation', {}) or {}
+                        if cv:
+                            bt_dict.update({
+                                'success': True,
+                                'mape': cv.get('mean_mape'),
+                                'p75_mape': cv.get('p75_mape'),
+                                'p95_mape': cv.get('p95_mape'),
+                                'mase': cv.get('mean_mase'),
+                                'folds': cv.get('iterations'),
+                                'backtest_period': backtest_months,
+                                'validation_horizon': validation_horizon
+                            })
+                        else:
+                            bt_dict.update({
+                                'success': False,
+                                'error': 'insufficient data for CV',
+                                'folds': 0,
+                                'backtest_period': backtest_months,
+                                'validation_horizon': validation_horizon
+                            })
+                        validation_results['backtesting_validation'] = bt_dict
+                    except Exception as e:
+                        bt_dict = validation_results.get('backtesting_validation', {}) or {}
+                        bt_dict.update({
+                            'success': False,
+                            'error': str(e)[:100],
+                            'folds': 0,
+                            'backtest_period': backtest_months,
+                            'validation_horizon': validation_horizon
+                        })
+                        validation_results['backtesting_validation'] = bt_dict
                     if product not in backtesting_results:
                         backtesting_results[product] = {}
                     backtesting_results[product]["ETS"] = validation_results
@@ -846,11 +1103,19 @@ def _run_ets_model(product, series, train, val, future_idx, act_df, results, map
                 diagnostic_messages.append(f"❌ **ETS Backtesting Failed**: {product} - Error: {error_msg}")
                 if product not in backtesting_results:
                     backtesting_results[product] = {}
-                backtesting_results[product]["ETS"] = None
+                backtesting_results[product]["ETS"] = {
+                    'backtesting_validation': {
+                        'success': False,
+                        'error': error_msg,
+                        'backtest_period': backtest_months,
+                        'validation_horizon': validation_horizon,
+                        'folds': 0
+                    }
+                }
         # Store results after any corrections
         fore_df = pd.DataFrame({"Product": product, "Date": future_idx, "ACR": pf, "Type": "forecast"})
         results["ETS"].append(pd.concat([act_df, fore_df], ignore_index=True))
-        diagnostic_messages.append(f"✅ ETS Product {product}: {seasonal_type} seasonal, MAPE {best_ets_config[1]:.1%}")
+        diagnostic_messages.append(f"✅ ETS Product {product}: {seasonal_type} seasonal, WAPE {best_ets_config[1]:.1%}")
     except Exception as e:
         diagnostic_messages.append(f"❌ ETS Product {product}: {str(e)[:50]}")
         _add_failed_metrics("ETS", mapes, smapes, mases, rmses)
@@ -912,7 +1177,7 @@ def _run_polynomial_model(product, series, train, val, future_idx, act_df, resul
             fore_df = pd.DataFrame({"Product": product, "Date": future_idx, "ACR": pf, "Type": "forecast"})
             results[model_name].append(pd.concat([act_df, fore_df], ignore_index=True))
             
-            diagnostic_messages.append(f"✅ {model_name} Product {product}: MAPE {val_mape:.1%} (pure polynomial)")
+            diagnostic_messages.append(f"✅ {model_name} Product {product}: WAPE {val_mape:.1%} (pure polynomial)")
 
             # Backtesting diagnostics for Polynomial
             if enable_backtesting:
@@ -950,7 +1215,7 @@ def _run_polynomial_model(product, series, train, val, future_idx, act_df, resul
                         backtesting_results[product] = {}
                     backtesting_results[product][model_name] = None
         else:
-            diagnostic_messages.append(f"❌ {model_name} Product {product}: Poor fit (MAPE {val_mape:.1%}), skipping")
+            diagnostic_messages.append(f"❌ {model_name} Product {product}: Poor fit (WAPE {val_mape:.1%}), skipping")
             _add_failed_metrics(model_name, mapes, smapes, mases, rmses)
         
     except Exception as e:
@@ -1041,7 +1306,7 @@ def _run_prophet_model(product, series, train, val, future_idx, act_df, results,
         results["Prophet"].append(pd.concat([act_df, fore_df], ignore_index=True))
         
         holiday_status = "with holidays" if enable_prophet_holidays and holidays_df is not None else "no holidays"
-        diagnostic_messages.append(f"✅ Prophet Product {product}: MAPE {val_mape:.1%} ({holiday_status})")
+        diagnostic_messages.append(f"✅ Prophet Product {product}: WAPE {val_mape:.1%} ({holiday_status})")
 
         # Backtesting diagnostics for Prophet
         if enable_backtesting and HAVE_PROPHET:
@@ -1071,6 +1336,46 @@ def _run_prophet_model(product, series, train, val, future_idx, act_df, results,
                         backtesting_results[product] = {}
                     backtesting_results[product]["Prophet"] = validation_results
                     diagnostic_messages.append(f"✅ **Prophet Backtesting**: Successfully completed backtesting for {product}")
+                    # Add expanding-window CV summary for selection
+                    try:
+                        prophet_fit_fn_cv = create_prophet_fitting_function(enable_holidays=bool(holidays_df is not None))
+                        cv = walk_forward_validation(
+                            series=series,
+                            model_fitting_func=prophet_fit_fn_cv,
+                            window_size=24,
+                            step_size=validation_horizon,
+                            horizon=validation_horizon,
+                            model_params={},
+                            diagnostic_messages=diagnostic_messages,
+                            gap=backtest_gap
+                        )
+                        if cv:
+                            backtesting_results[product]["Prophet"]["backtesting_validation"] = {
+                                'success': True,
+                                'mape': cv.get('mean_mape'),
+                                'p75_mape': cv.get('p75_mape'),
+                                'p95_mape': cv.get('p95_mape'),
+                                'mase': cv.get('mean_mase'),
+                                'folds': cv.get('iterations'),
+                                'backtest_period': backtest_months,
+                                'validation_horizon': validation_horizon
+                            }
+                        else:
+                            backtesting_results[product]["Prophet"]["backtesting_validation"] = {
+                                'success': False,
+                                'error': 'insufficient data for CV',
+                                'folds': 0,
+                                'backtest_period': backtest_months,
+                                'validation_horizon': validation_horizon
+                            }
+                    except Exception as e:
+                        backtesting_results[product]["Prophet"]["backtesting_validation"] = {
+                            'success': False,
+                            'error': str(e)[:100],
+                            'folds': 0,
+                            'backtest_period': backtest_months,
+                            'validation_horizon': validation_horizon
+                        }
             except Exception as e:
                 error_msg = str(e)[:100]  # Get more of the error message
                 if "prophet not available" in error_msg.lower():
@@ -1079,7 +1384,7 @@ def _run_prophet_model(product, series, train, val, future_idx, act_df, results,
                     diagnostic_messages.append(f"❌ **Prophet Backtesting Failed**: {product} - Error: {error_msg}")
                     if product not in backtesting_results:
                         backtesting_results[product] = {}
-                    backtesting_results[product]["Prophet"] = None
+                    backtesting_results[product]["Prophet"] = {'backtesting_validation': {'success': False, 'error': error_msg, 'backtest_period': backtest_months, 'validation_horizon': validation_horizon, 'folds': 0}}
         elif enable_backtesting and not HAVE_PROPHET:
             diagnostic_messages.append(f"⚠️ **Prophet Backtesting Skipped**: {product} - Prophet package not available")
         
@@ -1159,7 +1464,7 @@ def _run_auto_arima_model(product, series, train, val, future_idx, act_df, resul
         model_order = auto_model_full.order
         seasonal_order = auto_model_full.seasonal_order
         diagnostic_messages.append(
-            f"✅ Auto-ARIMA Product {product}: Order {model_order}, Seasonal {seasonal_order}, MAPE {val_mape:.1%}"
+            f"✅ Auto-ARIMA Product {product}: Order {model_order}, Seasonal {seasonal_order}, WAPE {val_mape:.1%}"
         )
 
         # Backtesting diagnostics for Auto-ARIMA
@@ -1191,12 +1496,52 @@ def _run_auto_arima_model(product, series, train, val, future_idx, act_df, resul
                         backtesting_results[product] = {}
                     backtesting_results[product]["Auto-ARIMA"] = validation_results
                     diagnostic_messages.append(f"✅ **Auto-ARIMA Backtesting**: Successfully completed backtesting for {product}")
+                    # Add expanding-window CV summary for selection
+                    try:
+                        aa_fit_fn_cv = create_auto_arima_fitting_function()
+                        cv = walk_forward_validation(
+                            series=series,
+                            model_fitting_func=aa_fit_fn_cv,
+                            window_size=24,
+                            step_size=validation_horizon,
+                            horizon=validation_horizon,
+                            model_params={},
+                            diagnostic_messages=diagnostic_messages,
+                            gap=backtest_gap
+                        )
+                        if cv:
+                            backtesting_results[product]["Auto-ARIMA"]["backtesting_validation"] = {
+                                'success': True,
+                                'mape': cv.get('mean_mape'),
+                                'p75_mape': cv.get('p75_mape'),
+                                'p95_mape': cv.get('p95_mape'),
+                                'mase': cv.get('mean_mase'),
+                                'folds': cv.get('iterations'),
+                                'backtest_period': backtest_months,
+                                'validation_horizon': validation_horizon
+                            }
+                        else:
+                            backtesting_results[product]["Auto-ARIMA"]["backtesting_validation"] = {
+                                'success': False,
+                                'error': 'insufficient data for CV',
+                                'folds': 0,
+                                'backtest_period': backtest_months,
+                                'validation_horizon': validation_horizon
+                            }
+                    except Exception as e:
+                        backtesting_results[product]["Auto-ARIMA"]["backtesting_validation"] = {
+                            'success': False,
+                            'error': str(e)[:100],
+                            'folds': 0,
+                            'backtest_period': backtest_months,
+                            'validation_horizon': validation_horizon
+                        }
             except Exception as e:
                 error_msg = str(e)[:100]  # Get more of the error message
                 diagnostic_messages.append(f"❌ **Auto-ARIMA Backtesting Failed**: {product} - Error: {error_msg}")
                 if product not in backtesting_results:
                     backtesting_results[product] = {}
-                backtesting_results[product]["Auto-ARIMA"] = None
+                backtesting_results[product]["Auto-ARIMA"] = {'backtesting_validation': {'success': False, 'error': error_msg, 'backtest_period': backtest_months, 'validation_horizon': validation_horizon, 'folds': 0}}
 
     except Exception as e:
         diagnostic_messages.append(f"❌ Auto-ARIMA Product {product}: {str(e)[:50]}")
@@ -1283,7 +1628,7 @@ def _run_lightgbm_model(product, series, train, val, future_idx, act_df, results
                         pf = apply_business_adjustments_to_forecast(pf, business_growth_assumption, market_multiplier)
                     fore_df = pd.DataFrame({"Product": product, "Date": future_idx[:len(pf)], "ACR": pf, "Type": "forecast"})
                     results["LightGBM"].append(pd.concat([act_df, fore_df], ignore_index=True))
-                    diagnostic_messages.append(f"✅ LightGBM Product {product}: MAPE {best_mape:.1%} (leak-safe)")
+                    diagnostic_messages.append(f"✅ LightGBM Product {product}: WAPE {best_mape:.1%} (leak-safe)")
 
                     if enable_backtesting and val_forecast is not None:
                         try:

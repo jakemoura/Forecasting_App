@@ -87,6 +87,11 @@ from .metrics import smape, mase, rmse, calculate_validation_metrics
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore', category=ConvergenceWarning)
 
+# Hard feature flags (can be flipped by policy)
+ENABLE_PROPHET = True
+ENABLE_LGBM = True
+ENABLE_POLY3 = False
+
 
 def apply_statistical_validation(forecasts, train_data, model_name="Model"):
     """
@@ -250,11 +255,11 @@ def get_seasonality_aware_split(series, seasonal_period=12, diagnostic_messages=
         
         if diagnostic_messages is not None:
             if n >= 48:
-                diagnostic_messages.append(f"✅ Excellent data: {train_size} months training, {val_size} months validation. Expected accuracy: 5-10% MAPE")
+                diagnostic_messages.append(f"✅ Excellent data: {train_size} months training, {val_size} months validation. Expected accuracy: 5-10% WAPE")
             elif n >= 36:
-                diagnostic_messages.append(f"✅ Good data: {train_size} months training, {val_size} months validation. Expected accuracy: 5-15% MAPE")
+                diagnostic_messages.append(f"✅ Good data: {train_size} months training, {val_size} months validation. Expected accuracy: 5-15% WAPE")
             else:
-                diagnostic_messages.append(f"📊 Adequate data: {train_size} months training, {val_size} months validation. Expected accuracy: 10-20% MAPE")
+                diagnostic_messages.append(f"📊 Adequate data: {train_size} months training, {val_size} months validation. Expected accuracy: 10-20% WAPE")
         return train, val
     
     # Fallback for edge cases
@@ -376,10 +381,9 @@ def create_auto_arima_fitting_function():
         Function that fits Auto-ARIMA model to training data
     """
     def fit_auto_arima_model(train_data, **kwargs):
-        """Fit Auto-ARIMA model to training data."""
+        """Fit Auto-ARIMA and return a wrapper with forecast(steps)."""
         if not HAVE_PMDARIMA:
             raise ImportError("pmdarima not available")
-        
         try:
             model = auto_arima(
                 train_data,
@@ -393,7 +397,12 @@ def create_auto_arima_fitting_function():
                 error_action='ignore',
                 trace=False
             )
-            return model
+            class _AAWrapper:
+                def __init__(self, m):
+                    self._m = m
+                def forecast(self, steps):
+                    return self._m.predict(steps)
+            return _AAWrapper(model)
         except Exception as e:
             raise e
     
@@ -411,36 +420,33 @@ def create_prophet_fitting_function(enable_holidays=False):
         Function that fits Prophet model to training data
     """
     def fit_prophet_model(train_data, **kwargs):
-        """Fit Prophet model to training data."""
+        """Fit Prophet and return a wrapper with forecast(steps)."""
         if not HAVE_PROPHET:
             raise ImportError("prophet not available")
-        
         try:
-            # Prepare data for Prophet
-            prophet_df = pd.DataFrame({
-                'ds': train_data.index,
-                'y': train_data.values
-            })
-            
-            # Initialize Prophet model
-            # type: ignore[call-arg]
-            model = Prophet(
+            df = pd.DataFrame({'ds': pd.to_datetime(train_data.index), 'y': train_data.values})
+            m = _Prophet(
                 yearly_seasonality=True,
                 weekly_seasonality=False,
                 daily_seasonality=False,
                 changepoint_prior_scale=0.05
             )
-            
             if enable_holidays:
                 try:
-                    model.add_country_holidays(country_name='US')  # type: ignore[attr-defined]
+                    m.add_country_holidays(country_name='US')  # type: ignore[attr-defined]
                 except Exception:
-                    pass  # Holidays not critical
-            
-            # Fit the model
-            model.fit(prophet_df)  # type: ignore[attr-defined]
-            return model
-            
+                    pass
+            m.fit(df)  # type: ignore[attr-defined]
+            class _PWrapper:
+                def __init__(self, model, last_ts):
+                    self._m = model
+                    self._last = pd.to_datetime(last_ts)
+                def forecast(self, steps):
+                    future_idx = pd.date_range(self._last + pd.DateOffset(months=1), periods=int(steps), freq='MS')
+                    future_df = pd.DataFrame({'ds': future_idx})
+                    fc = self._m.predict(future_df)
+                    return fc['yhat'].values
+            return _PWrapper(m, train_data.index[-1])
         except Exception as e:
             raise e
     
@@ -493,6 +499,70 @@ def create_polynomial_fitting_function(degree=2):
             raise e
     
     return fit_polynomial_model
+
+
+def create_lightgbm_fitting_function():
+    """Create a leak-safe LightGBM fitting function for backtesting with forecast(steps)."""
+    if not HAVE_LGBM:
+        def _unavailable(*args, **kwargs):
+            raise ImportError("lightgbm not available")
+        return _unavailable
+
+    def build_feature_frame(series: pd.Series) -> pd.DataFrame:
+        df = pd.DataFrame({'ACR': series.values}, index=pd.to_datetime(series.index))
+        for lag in [1,2,3,6,12]:
+            df[f'lag_{lag}'] = df['ACR'].shift(lag)
+        for window in [3,6,12]:
+            df[f'rolling_mean_{window}'] = df['ACR'].rolling(window).mean()
+            df[f'rolling_std_{window}'] = df['ACR'].rolling(window).std()
+        idx = pd.to_datetime(df.index)
+        df['month'] = idx.month
+        df['quarter'] = idx.quarter
+        df['year'] = idx.year
+        df['trend'] = range(len(df))
+        return df
+
+    def fit_lgbm_model(train_data: pd.Series, **kwargs):
+        # Train on provided series
+        df = build_feature_frame(train_data).dropna()
+        if df.empty:
+            raise RuntimeError("insufficient features for LightGBM")
+        feat_cols = [c for c in df.columns if c != 'ACR']
+        model = LGBMRegressor(n_estimators=150, learning_rate=0.05, num_leaves=31, max_depth=7,
+                              random_state=42, verbose=-1, force_col_wise=True)
+        model.fit(df[feat_cols], df['ACR'])
+
+        class _LGBMWrapper:
+            def __init__(self, base_series: pd.Series, mdl, feat_cols):
+                self._series = base_series.copy()
+                self._m = mdl
+                self._feat_cols = feat_cols
+            def forecast(self, steps: int):
+                preds = []
+                temp = self._series.copy()
+                for _ in range(int(steps)):
+                    feats = build_feature_frame(temp).dropna()
+                    if feats.empty:
+                        preds.append(float('nan'))
+                        continue
+                    x_last = feats[self._feat_cols].iloc[-1:]
+                    yhat = float(np.asarray(self._m.predict(x_last)).ravel()[0])
+                    preds.append(yhat)
+                    next_date = pd.Timestamp(str(temp.index[-1])) + pd.DateOffset(months=1)
+                    temp = pd.concat([temp, pd.Series([yhat], index=[next_date])])
+                return np.array(preds)
+
+        return _LGBMWrapper(train_data, model, feat_cols)
+
+    return fit_lgbm_model
+
+
+def fit_seasonal_naive(train_data, steps, seasonal_period=12):
+    """Seasonal Naive baseline: repeat last season into forecast horizon."""
+    last_season = train_data[-seasonal_period:] if len(train_data) >= seasonal_period else train_data
+    reps = int(np.ceil(steps / len(last_season))) if len(last_season) else 1
+    fc = np.tile(np.array(last_season), reps)[:steps]
+    return pd.Series(fc)
 
 def apply_trend_aware_forecasting(forecasts, full_series, train_end_idx, model_name="Model", diagnostic_messages=None):
     """
@@ -599,15 +669,12 @@ def fit_best_sarima(train_data, validation_data, seasonality_strength=0.5):
     Now returns all four metrics: (model, selection_criterion, criterion_value, mape, smape, mase, rmse)
     """
     # Adapt parameter search based on seasonality strength
-    if seasonality_strength > 0.7:  # Strong seasonality
-        pdq = list(itertools.product(range(3), range(2), range(3)))  # Full search
-        seasonal_pdq = [(p, d, q, 12) for p, d, q in itertools.product(range(2), range(2), range(2))]
-    elif seasonality_strength > 0.3:  # Moderate seasonality  
-        pdq = list(itertools.product(range(2), range(2), range(2)))  # Reduced search
-        seasonal_pdq = [(p, d, q, 12) for p, d, q in itertools.product(range(2), range(1), range(2))]
-    else:  # Weak seasonality
-        pdq = list(itertools.product(range(2), range(2), range(2)))  # Simple search
-        seasonal_pdq = [(0, 0, 0, 12), (1, 0, 0, 12), (0, 1, 1, 12)]  # Minimal seasonal terms
+    if seasonality_strength > 0.7:
+        pdq = [(p, d, q) for p in (0,1,2) for d in (0,1) for q in (0,1,2)]
+        seasonal_pdq = [(p, d, q, 12) for p in (0,1) for d in (0,1) for q in (0,1)]
+    else:
+        pdq = [(p, d, q) for p in (0,1) for d in (0,1) for q in (0,1)]
+        seasonal_pdq = [(0, d, 0, 12) for d in (0,1)]
     
     # Track best models for both AIC and BIC
     best_aic = float("inf")
@@ -634,7 +701,7 @@ def fit_best_sarima(train_data, validation_data, seasonality_strength=0.5):
                     validation_data, forecast_mean, train_data)
                 
                 # Only consider models with reasonable validation performance
-                if mape_val < 1.0:  # MAPE < 100%
+                if mape_val < 1.0:  # WAPE < 100%
                     # Track best AIC model
                     if model.aic < best_aic:  # type: ignore
                         best_aic = model.aic  # type: ignore
@@ -678,7 +745,7 @@ def fit_best_sarima(train_data, validation_data, seasonality_strength=0.5):
                     continue
     
     # Choose the best model based on validation performance
-    # Compare AIC-best vs BIC-best models using validation MAPE
+    # Compare AIC-best vs BIC-best models using validation WAPE
     if best_aic_model is None and best_bic_model is None:
         return None, None, None, float("inf"), np.nan, np.nan, np.nan
     elif best_aic_model is None:
@@ -689,7 +756,7 @@ def fit_best_sarima(train_data, validation_data, seasonality_strength=0.5):
         # Both models exist - choose based on validation performance
         # This approach leverages both AIC and BIC model selection, then uses
         # out-of-sample validation to make the final decision
-        if best_aic_metrics[0] <= best_bic_metrics[0]:  # Compare MAPE
+        if best_aic_metrics[0] <= best_bic_metrics[0]:  # Compare WAPE
             return best_aic_model, "AIC", best_aic, best_aic_metrics[0], best_aic_metrics[1], best_aic_metrics[2], best_aic_metrics[3]
         else:
             return best_bic_model, "BIC", best_bic, best_bic_metrics[0], best_bic_metrics[1], best_bic_metrics[2], best_bic_metrics[3]

@@ -50,19 +50,21 @@ def create_sidebar_controls():
         horizon = st.number_input("📅 Months to forecast", 6, 120, 12, 3)
         
         st.markdown("### 🤖 **Select Models**")
-        available_models = ["SARIMA", "ETS", "Poly-2", "Poly-3"]
-        if HAVE_PROPHET:
-            available_models.append("Prophet")
+        available_models = ["SARIMA", "ETS", "Seasonal-Naive", "Poly-2", "Poly-3"]
         if HAVE_PMDARIMA:
             available_models.append("Auto-ARIMA")
+        if HAVE_PROPHET:
+            available_models.append("Prophet")
         if HAVE_LGBM:
             available_models.append("LightGBM")
-        
+
+        # Always run the core five when available; hide from accidental deselection by preselecting them
+        default_models = [m for m in ["ETS", "SARIMA", "Seasonal-Naive", "Auto-ARIMA", "Prophet", "LightGBM"] if m in available_models]
         models_selected = st.multiselect(
             "Choose forecasting models",
             available_models,
-            default=available_models,
-            help="Select which models to run. More models = better comparison but longer runtime."
+            default=default_models,
+            help="Core models are preselected. Additional models may be included if available."
         )
         
         # Prophet-specific settings
@@ -220,6 +222,12 @@ def create_accuracy_validation_section():
                 consistency = data_quality.get('consistency_ratio', 0)
                 
                 st.caption(f"**Quality**: {grade} ({score}/100) | **Consistency**: {consistency:.0%} | **Products**: {data_context.get('total_products', 0)}")
+                # Persist recommendations so the main page can echo them exactly
+                st.session_state['recommended_backtest_text'] = recommendations.get('message', '')
+                st.session_state['recommended_backtest_range'] = (
+                    recommendations.get('min_value', 6), recommendations.get('max_value', 24)
+                )
+                st.session_state['recommended_backtest_default'] = recommendations.get('default_value', 12)
         elif analysis_complete:
             # Analysis complete but no recommendations - show status
             st.success("✅ **Data Analysis Complete!**")
@@ -250,9 +258,9 @@ def create_accuracy_validation_section():
         st.markdown("")  # Add spacing before slider
         backtest_months = st.slider(
             "Backtest last X months",
-            min_value=min_value,
-            max_value=max_value,
-            value=default_value,
+            min_value=12,
+            max_value=24,
+            value=18,
             step=1,
             disabled=slider_disabled,
             help=f"Smart recommendation: {recommendations.get('recommended_range', '6-24 months') if analysis_complete else 'Upload data first'} based on your data"
@@ -280,11 +288,16 @@ def create_accuracy_validation_section():
     # Simple backtesting flag - always enabled for reliable validation
     enable_backtesting = True
 
+    # Persist the chosen values for display elsewhere
+    st.session_state['chosen_backtest_months'] = int(backtest_months)
+    st.session_state['chosen_validation_horizon'] = 6
+    st.session_state['chosen_backtest_gap'] = 0
+
     return {
         'enable_backtesting': enable_backtesting,
         'backtest_months': int(backtest_months),
-        'backtest_gap': 1,  # Fixed at 1 month for simple validation
-        'validation_horizon': 6,  # Fixed at 6 months for reasonable validation
+        'backtest_gap': 0,
+        'validation_horizon': 6,
         'fiscal_year_start_month': int(fiscal_year_start_month)
     }
 
@@ -298,18 +311,17 @@ def create_advanced_options_section():
             help="Apply statistical bounds to prevent extreme outliers"
         )
         
+        # Always enabled per policy
         enable_business_aware_selection = st.checkbox(
             "Business-aware model selection", True,
-            help="Prioritize business-appropriate models over pure MAPE optimization. Recommended for consumptive business revenue forecasting."
+            help="Prioritize business-appropriate models over pure WAPE optimization.",
+            disabled=True
         )
 
     if not enable_statistical_validation:
         st.caption("⚠️ Raw model outputs (no bounds)")
     
-    if not enable_business_aware_selection:
-        st.caption("📊 Pure MAPE optimization (may favor polynomial models)")
-    else:
-        st.caption("🏢 Considers business context (deprioritizes polynomial for revenue)")
+    st.caption("🏢 Business-aware selection enforced (deprioritizes polynomial/unstable models for revenue)")
 
     return {
             'confidence_intervals': confidence_intervals,
@@ -365,7 +377,7 @@ def display_data_requirements():
         st.markdown("""
         <div style="background-color: #f0f8f0; padding: 0.5rem; border-radius: 6px; border-left: 3px solid #28a745;">
         <h5 style="color: #28a745; margin: 0; font-size: 0.9rem;">🟢 Excellent (36+ months)</h5>
-        <p style="margin: 0.3rem 0; font-size: 0.8rem;"><strong>MAPE:</strong> 5-15%</p>
+        <p style="margin: 0.3rem 0; font-size: 0.8rem;"><strong>WAPE:</strong> 5-15%</p>
         </div>
         """, unsafe_allow_html=True)
         
@@ -373,7 +385,7 @@ def display_data_requirements():
         st.markdown("""
         <div style="background-color: #fff8e1; padding: 0.5rem; border-radius: 6px; border-left: 3px solid #ffc107;">
         <h5 style="color: #e67e00; margin: 0; font-size: 0.9rem;">🟡 Good (24-36 months)</h5>
-        <p style="margin: 0.3rem 0; font-size: 0.8rem;"><strong>MAPE:</strong> 10-20%</p>
+        <p style="margin: 0.3rem 0; font-size: 0.8rem;"><strong>WAPE:</strong> 10-20%</p>
         </div>
         """, unsafe_allow_html=True)
         
@@ -381,7 +393,7 @@ def display_data_requirements():
         st.markdown("""
         <div style="background-color: #ffeaa7; padding: 0.5rem; border-radius: 6px; border-left: 3px solid #fdcb6e;">
         <h5 style="color: #e17055; margin: 0; font-size: 0.9rem;">🟠 Limited (18-24 months)</h5>
-        <p style="margin: 0.3rem 0; font-size: 0.8rem;"><strong>MAPE:</strong> 15-30%</p>
+        <p style="margin: 0.3rem 0; font-size: 0.8rem;"><strong>WAPE:</strong> 15-30%</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -399,7 +411,7 @@ def display_advanced_requirements():
         
         **💡 Pro Tip:** With limited data, Polynomial models are most reliable while seasonal models may struggle.
         
-        **⚠️ Business Context Warning:** For consumptive business revenue forecasting, polynomial models may produce misleading forecasts despite low MAPE. Enable "Business-Aware Model Selection" in Advanced Options to automatically deprioritize these models for revenue products.
+        **⚠️ Business Context Warning:** For consumptive business revenue forecasting, polynomial models may produce misleading forecasts despite low WAPE. Enable "Business-Aware Model Selection" in Advanced Options to automatically deprioritize these models for revenue products.
         """)
 
 
@@ -423,47 +435,84 @@ def display_upload_section():
     
     # AUTO-ANALYSIS: Run immediately after upload
     if uploaded is not None:
-        try:
-            # Import here to avoid circular imports
-            from .utils import read_any_excel
-            from .data_validation import validate_data_format, prepare_data, analyze_data_quality, display_data_analysis_results
-            from .ui_components import display_data_context_summary
-            
-            # Read and validate data
-            raw = read_any_excel(io.BytesIO(uploaded.read()))
-            validate_data_format(raw)
-            
-            # Prepare data
+        # Prevent infinite rerun loop by short‑circuiting once after refresh
+        if st.session_state.get('analysis_rerun_pending', False):
+            st.session_state['analysis_rerun_pending'] = False
+            # Do not re-run analysis; continue to render the run button below
+        # If this exact file was already analyzed, skip re-analysis
+        if (
+            st.session_state.get('data_analysis_complete')
+            and st.session_state.get('last_uploaded_file') == uploaded.name
+            and st.session_state.get('last_uploaded_size') == uploaded.size
+        ):
+            pass
+        else:
             try:
+                # Import here to avoid circular imports
+                from .utils import read_any_excel
+                from .data_validation import (
+                    validate_data_format,
+                    prepare_data,
+                    analyze_data_quality,
+                    display_data_analysis_results,
+                )
+                from .ui_components import display_data_context_summary
+
+                # Read and validate data
+                raw = read_any_excel(io.BytesIO(uploaded.read()))
+                validate_data_format(raw)
+
+                # Prepare data
                 raw = prepare_data(raw)
-                
+
                 # Run data analysis immediately
                 st.markdown("### 🔍 **Data Analysis & Backtesting Recommendations**")
                 with st.spinner("Analyzing your data for optimal backtesting recommendations..."):
                     data_analysis, overall_status = analyze_data_quality(raw)
+                    # Persist results for display after rerun
+                    st.session_state['last_data_analysis'] = data_analysis
+                    st.session_state['last_overall_status'] = overall_status
                     display_data_analysis_results(data_analysis, overall_status)
                     display_data_context_summary()
-                
+
                 # Show ready message
-                st.success("✅ **Data Analysis Complete!** Check the sidebar for smart backtesting recommendations.")
-                
+                st.success(
+                    "✅ **Data Analysis Complete!** Sidebar will refresh with smart backtesting recommendations."
+                )
+
                 # Store uploaded file info for debugging
                 st.session_state['last_uploaded_file'] = uploaded.name
                 st.session_state['last_uploaded_size'] = uploaded.size
-                
+
                 # Store the processed data for the forecast pipeline
                 st.session_state['processed_data'] = raw
                 st.session_state['data_analysis_complete'] = True
+                # Trigger a full rerun so the sidebar re-renders with recommendations immediately
                 st.session_state['sidebar_update_trigger'] = True
-                
+                st.session_state['analysis_rerun_pending'] = True
+                st.rerun()
+
             except ValueError as e:
                 st.error(f"❌ **Data Error**: {str(e)}")
                 return uploaded, None
-                
-        except Exception as e:
-            st.error(f"❌ **Upload Error**: {str(e)}")
-            return uploaded, None
+            except Exception as e:
+                st.error(f"❌ **Upload Error**: {str(e)}")
+                return uploaded, None
     
+    # If we have prior analysis (e.g., after rerun), render it above the button
+    if st.session_state.get('last_data_analysis') is not None and st.session_state.get('last_overall_status') is not None:
+        st.markdown("### 🔍 **Data Analysis & Backtesting Recommendations**")
+        try:
+            from .data_validation import display_data_analysis_results as _dda
+            from .ui_components import display_data_context_summary as _ddcs
+            _dda(
+                st.session_state['last_data_analysis'],
+                st.session_state['last_overall_status']
+            )
+            _ddcs()
+        except Exception:
+            pass
+
     # Clean run button
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:

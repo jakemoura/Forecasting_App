@@ -118,10 +118,10 @@ def process_forecast(uploaded, config):
             enable_business_aware_selection=config.get('enable_business_aware_selection', False),
             enable_prophet_holidays=config['enable_prophet_holidays'],
             enable_backtesting=enable_backtesting,
-            use_backtesting_selection=False,
+            use_backtesting_selection=True,
             backtest_months=int(config.get('backtest_months', 12)),
-            backtest_gap=int(config.get('backtest_gap', 1)),
-            validation_horizon=int(config.get('validation_horizon', 12)),
+            backtest_gap=int(config.get('backtest_gap', 0)),
+            validation_horizon=int(config.get('validation_horizon', 6)),
             fiscal_year_start_month=int(config.get('fiscal_year_start_month', 1))
         )
 

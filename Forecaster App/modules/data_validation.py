@@ -123,7 +123,7 @@ def analyze_data_quality(raw_data):
                 "📊 Months": f"{months_count} months",
                 "📅 Date Range": date_range,
                 "🎯 Status": f"{status_info['icon']} {status_info['text']}",
-                "📈 Expected MAPE": status_info['accuracy'],
+                "📈 Expected WAPE": status_info['accuracy'],
                 "💡 Recommendation": status_info['recommendation']
             })
             
@@ -209,11 +209,11 @@ def _get_backtesting_recommendations(min_months, max_months, avg_months):
             'icon': '✅',
             'title': 'Good Data',
             'description': f'{available_months} months available',
-            'recommended_range': f'6-{safe_backtesting} months',
-            'default_value': default_value,
-            'min_value': 6,
-            'max_value': safe_backtesting,
-            'message': f'Excellent for robust validation. Use 6-{safe_backtesting} months backtesting for comprehensive validation.{" Default 12 months recommended for optimal training data." if available_months == 36 else ""}',
+            'recommended_range': f'12-18 months',
+            'default_value': 12 if available_months == 36 else min(18, safe_backtesting),
+            'min_value': 12,
+            'max_value': min(18, safe_backtesting),
+            'message': 'Recency-biased validation recommended: 12–18 months.',
             'confidence': 'high'
         }
     else:
@@ -222,11 +222,11 @@ def _get_backtesting_recommendations(min_months, max_months, avg_months):
             'icon': '🎯',
             'title': 'Excellent Data',
             'description': f'{available_months}+ months available',
-            'recommended_range': '18-24 months',
-            'default_value': 24,
-            'min_value': 6,
-            'max_value': 24,
-            'message': f'Maximum validation possible. Use 18-24 months backtesting for enterprise-grade validation.',
+            'recommended_range': '12-18 months',
+            'default_value': 18,
+            'min_value': 12,
+            'max_value': 18,
+            'message': 'Recency-biased validation recommended: 12–18 months (default 18).',
             'confidence': 'very_high'
         }
 
@@ -352,7 +352,7 @@ def display_data_analysis_results(data_analysis, overall_status):
             use_container_width=True,
             column_config={
                 "🎯 Status": st.column_config.TextColumn(width="medium"),
-                "📈 Expected MAPE": st.column_config.TextColumn(width="small"),
+                "📈 Expected WAPE": st.column_config.TextColumn(width="small"),
                 "💡 Recommendation": st.column_config.TextColumn(width="large")
             }
         )

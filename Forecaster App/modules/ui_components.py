@@ -77,8 +77,8 @@ def display_advanced_validation_settings():
 
 
 def display_enhanced_mape_analysis(backtesting_results):
-    """Clean enhanced MAPE summary (corruption removed)."""
-    st.markdown("### Enhanced MAPE Breakdown")
+    """Clean enhanced WAPE summary (corruption removed)."""
+    st.markdown("### Enhanced WAPE Breakdown")
     enhanced_rows = []
     for product, models in (backtesting_results or {}).items():
         for model, res in (models or {}).items():
@@ -88,8 +88,8 @@ def display_enhanced_mape_analysis(backtesting_results):
                     enhanced_rows.append({
                         'Product': product,
                         'Model': model,
-                        'MAPE': f"{enh.get('mape', 0):.1%}",
-                        'MAPE_Std': f"{enh.get('mape_std', 0):.1%}",
+                        'WAPE': f"{enh.get('mape', 0):.1%}",
+                        'WAPE_Std': f"{enh.get('mape_std', 0):.1%}",
                         'CI_Lower': f"{enh.get('mape_ci_lower', 0):.1%}",
                         'CI_Upper': f"{enh.get('mape_ci_upper', 0):.1%}",
                         'Bias': f"{enh.get('bias', 0):+.1%}",
@@ -139,8 +139,8 @@ def display_cross_validation_results(backtesting_results):
             df,
             column_config={
                 'Folds': st.column_config.NumberColumn('Folds', help='Number of cross-validation folds completed'),
-                'Mean_MAPE': st.column_config.TextColumn('Mean MAPE', help='Average MAPE across all folds'),
-                'Std_MAPE': st.column_config.TextColumn('MAPE Std', help='Standard deviation showing stability'),
+                'Mean_MAPE': st.column_config.TextColumn('Mean WAPE', help='Average WAPE across all folds'),
+                'Std_MAPE': st.column_config.TextColumn('WAPE Std', help='Standard deviation showing stability'),
                 'Stability': st.column_config.TextColumn('Stability', help='Stable/Moderate/Unstable based on variance')
             },
             use_container_width=True
@@ -174,9 +174,9 @@ def display_seasonal_performance_analysis(advanced_validation_results):
                         'Product': product,
                         'Model': model,
                         'Best_Month': seasonal.get('best_month_name', 'N/A'),
-                        'Best_Month_MAPE': f"{seasonal.get('best_month_mape', 0):.1%}",
+                        'Best_Month_WAPE': f"{seasonal.get('best_month_mape', 0):.1%}",
                         'Worst_Month': seasonal.get('worst_month_name', 'N/A'),
-                        'Worst_Month_MAPE': f"{seasonal.get('worst_month_mape', 0):.1%}",
+                        'Worst_Month_WAPE': f"{seasonal.get('worst_month_mape', 0):.1%}",
                         'Best_Quarter': seasonal.get('best_quarter_name', 'N/A'),
                         'Worst_Quarter': seasonal.get('worst_quarter_name', 'N/A'),
                         'Total_Periods': seasonal.get('total_periods', 0)
@@ -187,12 +187,12 @@ def display_seasonal_performance_analysis(advanced_validation_results):
         st.dataframe(
             df,
             column_config={
-                'Best_Month': st.column_config.TextColumn('Best Month', help='Month with lowest average MAPE'),
-                'Best_Month_MAPE': st.column_config.TextColumn('Best MAPE', help='MAPE for best performing month'),
+                'Best_Month': st.column_config.TextColumn('Best Month', help='Month with lowest average WAPE'),
+                'Best_Month_WAPE': st.column_config.TextColumn('Best WAPE', help='WAPE for best performing month'),
                 'Worst_Month': st.column_config.TextColumn('Worst Month', help='Month with highest average MAPE'),
-                'Worst_Month_MAPE': st.column_config.TextColumn('Worst MAPE', help='MAPE for worst performing month'),
-                'Best_Quarter': st.column_config.TextColumn('Best Quarter', help='Quarter with lowest average MAPE'),
-                'Worst_Quarter': st.column_config.TextColumn('Worst Quarter', help='Quarter with highest average MAPE'),
+                'Worst_Month_WAPE': st.column_config.TextColumn('Worst WAPE', help='WAPE for worst performing month'),
+                'Best_Quarter': st.column_config.TextColumn('Best Quarter', help='Quarter with lowest average WAPE'),
+                'Worst_Quarter': st.column_config.TextColumn('Worst Quarter', help='Quarter with highest average WAPE'),
                 'Total_Periods': st.column_config.NumberColumn('Periods', help='Total periods analyzed')
             },
             use_container_width=True
@@ -344,7 +344,7 @@ def display_backtesting_results(backtesting_results):
         **How it works:**
         1. **Training Period**: Models learn from older data
         2. **Validation Period**: Models predict on recent historical data
-        3. **Performance Measurement**: Compare predictions to actual values using MAPE
+        3. **Performance Measurement**: Compare predictions to actual values using WAPE
         4. **Model Selection**: Choose the best performing model per product
         """)
         
@@ -354,15 +354,15 @@ def display_backtesting_results(backtesting_results):
             "Validation Method": "Simple Train/Test Split",
             "Training Data": "Historical data excluding last X months",
             "Test Period": "Last X months (as specified in sidebar)",
-            "Performance Metric": "MAPE (Mean Absolute Percentage Error)",
-            "Selection Strategy": "Best model per product based on backtesting MAPE"
+            "Performance Metric": "WAPE (Weighted Absolute Percentage Error)",
+            "Selection Strategy": "Best model per product based on backtesting WAPE"
         }
         
         for key, value in config_info.items():
             st.caption(f"**{key}**: {value}")
         
         # Summary table: backtesting MAPE per model/product
-        st.markdown("#### 📊 **Backtesting Performance Results**")
+        st.markdown("#### 📊 **Backtesting Performance Results (WAPE)**")
         
         rows = []
         total_models = 0
@@ -403,10 +403,10 @@ def display_backtesting_results(backtesting_results):
                     })
         
         if rows:
-            # Sort by Product, then by Status (Success first), then by MAPE
+            # Sort by Product, then by Status (Success first), then by WAPE
             df = pd.DataFrame(rows)
             df['sort_key'] = df.apply(lambda x: (x['Product'], x['Status'] != '✅ Success', 
-                                                float(x['Backtest MAPE%']) if x['Backtest MAPE%'] != 'N/A' else 999), axis=1)
+                                                float(x.get('Backtest WAPE%', x.get('Backtest MAPE%'))) if x.get('Backtest WAPE%', x.get('Backtest MAPE%')) != 'N/A' else 999), axis=1)
             df = df.sort_values('sort_key').drop('sort_key', axis=1)
             
             st.dataframe(df, hide_index=True, use_container_width=True)
@@ -414,7 +414,7 @@ def display_backtesting_results(backtesting_results):
             # Performance interpretation
             st.markdown("#### 🎯 **Performance Interpretation**")
             st.caption("""
-            **MAPE Guidelines:**
+            **WAPE Guidelines:**
             - **< 10%**: Excellent accuracy
             - **10-20%**: Good accuracy  
             - **20-30%**: Moderate accuracy
@@ -438,10 +438,10 @@ def display_backtesting_results(backtesting_results):
             st.markdown("#### 🏆 **Model Selection Process**")
             st.info("""
             **How models are selected:**
-            1. **Backtesting Performance**: Models ranked by MAPE on validation data
+            1. **Backtesting Performance**: Models ranked by WAPE on validation data
             2. **Product-Specific Selection**: Best model chosen per product (not overall)
-            3. **Fallback Strategy**: If backtesting fails, falls back to basic MAPE rankings
-            4. **Hybrid Approach**: Combines backtesting results with MAPE rankings for robustness
+            3. **Fallback Strategy**: If backtesting fails, falls back to basic WAPE rankings
+            4. **Hybrid Approach**: Combines backtesting results with WAPE rankings for robustness
             """)
             
             # Show detailed results if user wants
@@ -514,11 +514,23 @@ def display_product_forecast(data, product, model_name, best_models_per_product=
     
     # Display model info for this product
     col1, col2 = st.columns([3, 1])
+    # Track the actual per-product model used (for backtest overlay and chart title)
+    actual_model = model_name
     with col1:
     # Prefer explicit BestModel column if present (hybrid views like Standard / Backtesting / Raw)
         if 'BestModel' in product_data.columns and not product_data['BestModel'].isna().all():
             actual_model = str(product_data['BestModel'].iloc[0])
-            st.caption(f"📊 Using **{actual_model}** model for this product")
+            # Attach selection rationale if available
+            reason = None
+            try:
+                reasons = st.session_state.get('best_model_reasons_backtesting', {}) or {}
+                reason = reasons.get(product)
+            except Exception:
+                reason = None
+            if reason:
+                st.caption(f"📊 Using **{actual_model}** model for this product — {reason}")
+            else:
+                st.caption(f"📊 Using **{actual_model}** model for this product")
         elif model_name == "Best per Product" and best_models_per_product and product in best_models_per_product:
             actual_model = best_models_per_product[product]
             st.caption(f"📊 Using **{actual_model}** model for this product")
@@ -526,23 +538,37 @@ def display_product_forecast(data, product, model_name, best_models_per_product=
             st.caption(f"📊 Using **{model_name}** model")
     
     with col2:
-        if best_mapes_per_product and product in best_mapes_per_product:
-            mape_val = best_mapes_per_product[product] * 100
-            if mape_val <= 15:
-                st.success(f"🎯 {mape_val:.1f}% MAPE")
-            elif mape_val <= 25:
-                st.info(f"📈 {mape_val:.1f}% MAPE")
+        # Prefer per‑model per‑product WAPE from session, fallback to best_mapes_per_product
+        wape_pct = None
+        try:
+            product_mapes = st.session_state.get('product_mapes', {}) or {}
+            if model_name in product_mapes and product in product_mapes[model_name]:
+                wape_pct = float(product_mapes[model_name][product]) * 100.0
+        except Exception:
+            wape_pct = None
+        if wape_pct is None and best_mapes_per_product and product in best_mapes_per_product:
+            try:
+                wape_pct = float(best_mapes_per_product[product]) * 100.0
+            except Exception:
+                wape_pct = None
+        if wape_pct is not None and np.isfinite(wape_pct):
+            if wape_pct <= 15:
+                st.success(f"🎯 {wape_pct:.1f}% WAPE")
+            elif wape_pct <= 25:
+                st.info(f"📈 {wape_pct:.1f}% WAPE")
             else:
-                st.warning(f"⚠️ {mape_val:.1f}% MAPE")
+                st.warning(f"⚠️ {wape_pct:.1f}% WAPE")
     
     # Create the main forecast chart with optional backtesting overlay
     try:
-        # Prepare backtesting data if available
+        # Prepare backtesting data using the winning per‑product model
         backtesting_results = st.session_state.get('backtesting_results', {})
-        backtesting_chart_data = prepare_backtesting_chart_data(backtesting_results, product, model_name)
+        # default overlay: the selected/winning model for this product
+        overlay_model = actual_model
+        backtesting_chart_data = prepare_backtesting_chart_data(backtesting_results, product, overlay_model)
         
         # Create chart with backtesting overlay
-        chart = create_forecast_chart(product_data, product, model_name, backtesting_chart_data)
+        chart = create_forecast_chart(product_data, product, actual_model, backtesting_chart_data)
         st.altair_chart(chart, use_container_width=True)
         
         # Show backtesting legend if backtesting data is available
@@ -703,10 +729,11 @@ def create_forecast_chart(data, product_name, model_name, backtesting_data=None)
     # Initialize chart layers
     chart_layers = [historical, forecast, noncompliant]
     
-    # Add backtesting overlay if available
+    # Add backtesting overlay if available (use a separate data source)
     if backtesting_data is not None and not backtesting_data.empty:
+        base_bt = alt.Chart(backtesting_data)
         # Backtesting predictions (what the model predicted during validation)
-        backtest_predictions = base.transform_filter(
+        backtest_predictions = base_bt.transform_filter(
             alt.datum.Type == 'backtest-prediction'
         ).mark_line(
             point=True,
@@ -718,9 +745,8 @@ def create_forecast_chart(data, product_name, model_name, backtesting_data=None)
             y='ACR:Q',
             tooltip=['Date:T', 'ACR:Q', 'Type:N']
         )
-        
         # Backtesting actuals (real values during validation period)
-        backtest_actuals = base.transform_filter(
+        backtest_actuals = base_bt.transform_filter(
             alt.datum.Type == 'backtest-actual'
         ).mark_line(
             point=True,
@@ -731,7 +757,6 @@ def create_forecast_chart(data, product_name, model_name, backtesting_data=None)
             y='ACR:Q',
             tooltip=['Date:T', 'ACR:Q', 'Type:N']
         )
-        
         chart_layers.extend([backtest_predictions, backtest_actuals])
     
     # Combine all layers
@@ -829,8 +854,8 @@ def display_model_comparison_table(avg_mapes, avg_smapes=None, avg_mases=None, a
     for model_name, mape_value in avg_mapes.items():
         row_data = {
             "Model": model_name,
-            "MAPE": f"{mape_value:.1%}",
-            "MAPE_Raw": mape_value  # For sorting
+            "WAPE": f"{mape_value:.1%}",
+            "MAPE_Raw": mape_value  # For sorting (key kept for compatibility)
         }
         
         # Add additional metrics if available
@@ -1041,13 +1066,10 @@ def display_forecast_results():
         st.info("💡 **Backtesting**: Enable backtesting in the sidebar to see model validation results.")
         st.markdown("---")
 
-    # Short model label mapper (Raw or Mix both -> Mix)
+    # Short model label mapper
     def _short_model_label(name: str) -> str:
         mapping = {
-            "Best per Product (Backtesting)": "Backtesting",
-            "Best per Product (Standard)": "Standard",
-            "Best per Product (Raw)": "Mix",
-            "Best per Product (Mix)": "Mix"
+            "Best per Product (Backtesting)": "Backtesting"
         }
         return mapping.get(name, name)
 
@@ -1060,65 +1082,26 @@ def display_forecast_results():
 
     # Restore model view toggles (exclude internal diagnostic variants to reduce confusion)
     composite_keys = [k for k in results.keys() if k.startswith("Best per Product (")]  # exclude raw base key
-    label_explanations = {
-        "Standard": "Fast basic validation (single split).",
-        "Backtesting": "Deeper walk‑forward / CV driven per‑product picks (more robust).",
-        "Mix": "Per‑product blend: chooses lower MAPE of Standard vs Backtesting for each product."
-    }
+    label_explanations = {"Backtesting": "Deeper walk‑forward / CV driven per‑product picks (more robust)."}
     def _label_for(k: str) -> str:
-        if k.endswith("(Standard)"): return "Standard"
         if k.endswith("(Backtesting)"): return "Backtesting"
-        if k.endswith("(Mix)"): return "Mix"
         return k
-    # Only surface composite variants except raw base
-    # Include legacy Raw as fallback ordering if still present
-    order_pref = ["Best per Product (Standard)", "Best per Product (Backtesting)", "Best per Product (Mix)", "Best per Product (Raw)"]
-    composite_keys_sorted = [k for k in order_pref if k in composite_keys]
+    # Only surface Backtesting; remove view selector
     active_key = None
-    if composite_keys_sorted:
-        default_key = best_model if best_model in composite_keys_sorted else composite_keys_sorted[0]
-        labels = [_label_for(k) for k in composite_keys_sorted]
-        selected_label = st.radio(
-            "View mode",
-            options=labels,
-            index=labels.index(_label_for(default_key)),
-            horizontal=True,
-            help="Switch Standard (fast), Backtesting (robust), or Mix (per‑product blend)." 
-        )
-        key_map = { _label_for(k): k for k in composite_keys_sorted }
-        active_key = key_map.get(selected_label, default_key)
-        with st.expander("What do these modes mean?", expanded=False):
-            for lbl in labels:
-                if lbl in label_explanations:
-                    st.markdown(f"**{lbl}:** {label_explanations[lbl]}")
+    for pref in ["Best per Product (Backtesting)"]:
+        if pref in results:
+            active_key = pref
+            break
     if not active_key:
-        for pref in ["Best per Product (Mix)", "Best per Product (Backtesting)", "Best per Product (Standard)"]:
-            if pref in results:
-                active_key = pref
-                break
-        if not active_key:
-            active_key = best_model  # ultimate fallback
+        active_key = best_model  # ultimate fallback
 
-    # Download button (always executed once active_key resolved)
-    try:
-        df_dl = results.get(active_key, pd.DataFrame())
-        if not df_dl.empty and {'Product','Date','ACR'}.issubset(df_dl.columns):
-            if 'Type' in df_dl.columns:
-                mask = df_dl['Type'].isin(['forecast', 'non-compliant-forecast'])
-                df_dl = df_dl.loc[mask].copy()
-            base_cols = [c for c in ['Product','Date','Type','ACR','BestModel'] if c in df_dl.columns]
-            other_cols = [c for c in df_dl.columns if c not in base_cols]
-            df_dl = df_dl[base_cols + other_cols]
-            csv_bytes = df_dl.to_csv(index=False).encode('utf-8')
-            st.download_button(f"⬇️ Download CSV — {active_key}", csv_bytes, file_name="forecast.csv", mime="text/csv")
-    except Exception:
-        pass
+    # (Download CSV moved to bottom inside a collapsible pane)
 
-    # Simple info about average MAPE for the active model key
+    # Simple info about average WAPE for the active model key
     try:
         active_mape = st.session_state.forecast_mapes.get(active_key, np.nan)
         if np.isfinite(active_mape):
-            st.caption(f"Average MAPE (active view): {active_mape*100:.1f}%")
+            st.caption(f"Average WAPE (active view): {active_mape*100:.1f}%")
     except Exception:
         pass
 
@@ -1228,11 +1211,14 @@ def display_forecast_results():
     with metrics_cols[0]:
         st.metric("Products", total_products)
     with metrics_cols[1]:
-        st.metric("Best MAPE", f"{best_mape:.1f}%")
+        st.metric("Best WAPE", f"{best_mape:.1f}%")
     with metrics_cols[2]:
         st.metric("Confidence", confidence_level)
     with metrics_cols[3]:
-        st.metric("Approach", _short_model_label(best_model_display))
+        # Replace single-approach KPI with composite label and method mix
+        label = "Best per Product (Backtesting)"
+        mix = st.session_state.get('best_models_per_product_backtesting_mix', None)
+        st.metric(label, mix or "Backtesting")
     with metrics_cols[4]:
         st.metric("Total Forecast", f"${total_forecast/1e6:.1f}M")
     with metrics_cols[5]:
@@ -1241,11 +1227,7 @@ def display_forecast_results():
     if mix_label:
         st.caption(f"Model Mix: {mix_label}")
     # Concise rationale line
-    if st.session_state.get('model_avg_ranks'):
-        best_rank = st.session_state.model_avg_ranks.get(best_model, float('inf'))
-        st.caption(f"Selection: multi-metric rank score {best_rank:.1f}.")
-    else:
-        st.caption("Selection: lowest average MAPE.")
+    st.caption("Selection: lowest mean WAPE on backtesting (ties → p75 WAPE → MASE).")
     st.markdown("---")
 
     # Product summary table (collapsible)
@@ -1255,13 +1237,6 @@ def display_forecast_results():
             for product, grp in df_active[df_active['Type'].eq('forecast') if 'Type' in df_active.columns else df_active.index.isin(df_active.index)].groupby('Product'):
                 total_p = float(grp['ACR'].sum())
                 model_p = grp['BestModel'].iloc[0] if 'BestModel' in grp.columns and not grp['BestModel'].isna().all() else ''
-                # per product YoY
-                hist_p = df_hist[df_hist['Product'] == product] if not df_hist.empty else pd.DataFrame()
-                hist12_p = _last_12_actual_sum(hist_p) if not hist_p.empty else 0.0
-                fore_p = df_fore[df_fore['Product']==product]
-                fore_sum12_p = _first_12_fore_sum(fore_p)
-                MIN_BASE_P = 5e5
-                yoy_p = ((fore_sum12_p / hist12_p) - 1.0) * 100.0 if hist12_p > MIN_BASE_P and fore_sum12_p > 0 else np.nan
                 # per product avg MoM
                 try:
                     agg_p = grp.groupby('Date')['ACR'].sum().sort_index()
@@ -1270,6 +1245,15 @@ def display_forecast_results():
                 except Exception:
                     avg_mom_p = np.nan
                 trend = "↑" if np.isfinite(avg_mom_p) and avg_mom_p > 0.5 else ("↓" if np.isfinite(avg_mom_p) and avg_mom_p < -0.5 else "→")
+                # per product WAPE (prefer backtesting per‑product mapes)
+                wape_prod = None
+                try:
+                    if best_mapes_per_product and product in best_mapes_per_product and np.isfinite(best_mapes_per_product[product]):
+                        wape_prod = float(best_mapes_per_product[product]) * 100.0
+                    elif isinstance(product_mapes, dict) and model_p in product_mapes and product in product_mapes[model_p]:
+                        wape_prod = float(product_mapes[model_p][product]) * 100.0
+                except Exception:
+                    wape_prod = None
                 # Drift badge (if drift applied to this product's active model forecast)
                 drift_products = st.session_state.get('drift_applied_products', [])
                 drift_badge = '🪄' if product in drift_products else ''
@@ -1277,7 +1261,7 @@ def display_forecast_results():
                     'Product': product,
                     'Model': (model_p + (' ' + drift_badge if drift_badge else '')),
                     'ForecastTotal': total_p / 1e6,  # Convert to millions for better display
-                    'YoY%': yoy_p,
+                    'WAPE%': wape_prod,
                     'AvgMoM%': avg_mom_p,
                     'Trend': trend
                 })
@@ -1289,7 +1273,7 @@ def display_forecast_results():
                 hide_index=True,
                 column_config={
                     'ForecastTotal': st.column_config.NumberColumn('Forecast ($M)', format="%.1f", help='Sum of forecast horizon in millions'),
-                    'YoY%': st.column_config.NumberColumn('YoY %', format="%.1f%%", help='Vs last 12 months actual'),
+                    'WAPE%': st.column_config.NumberColumn('WAPE %', format="%.1f%%", help='Per‑product validation WAPE (lower is better)'),
                     'AvgMoM%': st.column_config.NumberColumn('MoM %', format="%.1f%%", help='Average month-over-month growth'),
                     'Model': st.column_config.TextColumn('Model', help='Chosen model per product. 🪄 = drift applied to flat forecast.')
                 }
@@ -1303,23 +1287,17 @@ def display_forecast_results():
     if best_models_per_product:
         # Check if multi-metric ranking was used
         if st.session_state.get('model_avg_ranks'):
-            st.success("✅ **Multi-Metric Selection Applied:** Each product uses its best performing model across MAPE, SMAPE, MASE, and RMSE!")
-            with st.expander("📊 How Multi-Metric Ranking Works", expanded=False):
+            st.success("✅ **Backtesting-Only Selection:** Each product uses the model with the lowest WAPE on cross‑validated backtests (ties → p75 WAPE → MASE).")
+            with st.expander("📊 How Selection Works (Backtesting WAPE)", expanded=False):
                 st.markdown("""
-                **For each product, we evaluate models using 4 key metrics:**
-                - **MAPE** (Mean Absolute Percentage Error): Overall accuracy as a percentage
-                - **SMAPE** (Symmetric MAPE): Balanced accuracy that treats over/under-forecasts equally  
-                - **MASE** (Mean Absolute Scaled Error): Accuracy relative to a naive seasonal forecast
-                - **RMSE** (Root Mean Squared Error): Penalizes larger forecast errors more heavily
-                
-                **Selection Process:**
-                1. Rank all models by each metric for each product
-                2. Calculate average rank across all 4 metrics 
-                3. Select the model with the best average ranking
-                4. This gives more robust selection than any single metric alone
+                **Per‑product selection, scored strictly on backtesting WAPE:**
+                - **Primary:** Mean WAPE across folds
+                - **Tie‑breaks:** p75 WAPE → MASE → recent worst‑month error
+                - **Eligibility:** ≥24 mo history, ≥2 folds (h=6), MASE < 1.0, p95 WAPE ≤ 2× mean, and ≥5% WAPE better than Seasonal‑Naive
+                - **Fallback:** If ineligible/insufficient data → Seasonal‑Naive (or ETS[A,A,A])
                 """)
         else:
-            st.success("✅ **Smart Selection Applied:** Each product uses its most accurate model!")
+            st.success("✅ **Backtesting Applied:** Models are chosen per product by lowest WAPE.")
     
     # Business warnings (if any)
     poly_warnings = []
@@ -1386,20 +1364,12 @@ def display_forecast_results():
         )
     with col2:
         if chart_model == best_model:
-            if st.session_state.get('model_avg_ranks'):
-                best_rank = st.session_state.model_avg_ranks.get(best_model, float('inf'))
-                st.success(f"🏆 Best Model (Multi-Metric Rank: {best_rank:.1f})")
-            else:
-                st.success("🏆 Best Model")
+            st.success("🏆 Best Model (Backtesting)")
         else:
             chart_mape = avg_mapes.get(chart_model, np.nan) * 100
             if not np.isnan(chart_mape):
                     # Show ranking info if available
-                    if st.session_state.get('model_avg_ranks') and chart_model in st.session_state.model_avg_ranks:
-                        chart_rank = st.session_state.model_avg_ranks[chart_model]
-                        st.info(f"📈 MAPE: {chart_mape:.1f}% (Multi-Metric Rank: {chart_rank:.1f})")
-                    else:
-                        st.info(f"📈 MAPE: {chart_mape:.1f}%")
+                    st.info(f"📈 WAPE: {chart_mape:.1f}%")
         
         # Use adjusted data if available, otherwise use original  
         if st.session_state.get('adjusted_forecast_results') is not None:
@@ -1647,8 +1617,16 @@ def display_forecast_results():
     st.markdown("## 📥 **Download Results**")
     col1, col2 = st.columns([2, 1])
     with col1:
-        choice = st.selectbox("Choose model for download", list(results.keys()),
-                             index=list(results.keys()).index(best_model), key="download_model_choice")
+        # Default to Best per Product (Backtesting) and hide legacy generic 'Best per Product'
+        download_options = [k for k in results.keys() if k != "Best per Product"]
+        default_choice = "Best per Product (Backtesting)" if "Best per Product (Backtesting)" in download_options else best_model
+        # Auto-select; no need to expose a confusing selector if only backtesting is supported
+        choice = st.selectbox(
+            "Choose model for download",
+            download_options,
+            index=download_options.index(default_choice) if default_choice in download_options else 0,
+            key="download_model_choice"
+        )
 
         # Use adjusted results if available, otherwise use original
         if st.session_state.get('adjusted_forecast_results') is not None:
@@ -1834,7 +1812,7 @@ def display_forecast_results():
 
                 performance_data.append({
                     "Model": model_display,
-                    "Avg MAPE": f"{mape_pct:.2f}%",
+                    "Avg WAPE": f"{mape_pct:.2f}%",
                     "Multi-Metric Rank": rank_info,
                     "Status": accuracy_note
                 })
@@ -1844,7 +1822,7 @@ def display_forecast_results():
 
             # Show detailed metrics if available
             if st.session_state.get('product_smapes') or st.session_state.get('product_mases'):
-                st.markdown("### 📈 All Metrics Summary")
+                st.markdown("### 📈 All Metrics Summary (WAPE, MASE, SMAPE, RMSE)")
                 st.caption("Lower values are better for all metrics")
 
                 # Create summary of all metrics across all products
@@ -1875,7 +1853,7 @@ def display_forecast_results():
 
                     all_metrics_data.append({
                         "Model": model_name,
-                        "MAPE": f"{avg_mapes[model_name]*100:.2f}%",
+                        "WAPE": f"{avg_mapes[model_name]*100:.2f}%",
                         "SMAPE": avg_smape,
                         "MASE": avg_mase,
                         "RMSE": avg_rmse
@@ -1888,7 +1866,7 @@ def display_forecast_results():
             # Per-product model selection details
             if best_models_per_product:
                 st.markdown("### Per-Product Model Selection")
-                st.caption("📊 Models selected using **multi-metric ranking** across MAPE, SMAPE, MASE, and RMSE (lower values = better performance)")
+                st.caption("📊 Models selected per product by backtesting WAPE (ties → p75 WAPE → MASE). Other metrics shown for diagnostics.")
                 product_performance_data = []
 
                 # Get metric data from session state
@@ -1938,7 +1916,7 @@ def display_forecast_results():
                     product_performance_data.append({
                         "Product": product,
                         "Best Model": best_model_for_product,
-                        "MAPE": f"{mape_pct:.2f}%" if isinstance(mape_pct, (int, float)) else mape_pct,
+                        "WAPE": f"{mape_pct:.2f}%" if isinstance(mape_pct, (int, float)) else mape_pct,
                         "SMAPE": smape_val,
                         "MASE": mase_val,
                         "RMSE": rmse_val,
@@ -1949,13 +1927,12 @@ def display_forecast_results():
                 st.dataframe(product_performance_df, hide_index=True, use_container_width=True)
 
                 st.info("""
-                **How Product-by-Product Selection Works:**
-                - Each model is tested on each data product individually
-                - We calculate **all four metrics** (MAPE, SMAPE, MASE, RMSE) for each model-product combination  
-                - Models are **ranked across all four metrics** for each specific product
-                - The model with the **best average ranking across all metrics** for each product is selected
-                - The table above shows **all calculated metrics** for the selected model per product
-                - This multi-metric approach provides more robust model selection than MAPE alone
+                **How Product-by-Product Selection Works (Backtesting):**
+                - Each model is walk‑forward backtested per product (gap=0, h=6)
+                - We compute WAPE, SMAPE, MASE, and RMSE; selection uses WAPE
+                - Tie‑breaks: p75 WAPE → MASE → recent worst‑month error
+                - Ineligible models (too few folds, MASE ≥ 1.0, unstable p95, or <5% better than Seasonal‑Naive) are excluded
+                - The table shows diagnostic metrics for the selected model per product
                 """)
 
         # === ADVANCED VALIDATION (if available) — placed after Download Results ===
@@ -1963,6 +1940,70 @@ def display_forecast_results():
         if adv:
             st.markdown("---")
             display_advanced_validation_results(adv)
+
+        # === BACKTESTING DETAILS (product/model table) ===
+        bt_all = st.session_state.get('backtesting_results', {}) or {}
+        if bt_all:
+            st.markdown("---")
+            st.markdown("## 🧪 Backtesting Details")
+            products_bt = sorted(list(bt_all.keys()))
+            product_choice = st.selectbox("Select product", options=["All"] + products_bt, index=0, key="bt_details_product")
+
+            rows = []
+            for prod, models_map in bt_all.items():
+                if product_choice != "All" and prod != product_choice:
+                    continue
+                if not isinstance(models_map, dict):
+                    continue
+                for model_name, res in models_map.items():
+                    if not isinstance(res, dict):
+                        continue
+                    bt = res.get('backtesting_validation') or {}
+                    if not isinstance(bt, dict):
+                        continue
+                    bt_err = None
+                    try:
+                        bt_err = bt.get('error')
+                    except Exception:
+                        bt_err = None
+                    rows.append({
+                        "Product": prod,
+                        "Model": model_name,
+                        "WAPE": f"{bt.get('mape', float('nan')):.3f}" if isinstance(bt.get('mape', None), (int, float)) else "N/A",
+                        "SMAPE": f"{bt.get('smape', float('nan')):.3f}" if isinstance(bt.get('smape', None), (int, float)) else "N/A",
+                        "MASE": f"{bt.get('mase', float('nan')):.3f}" if isinstance(bt.get('mase', None), (int, float)) else "N/A",
+                        "RMSE": f"{bt.get('rmse', float('nan')):.0f}" if isinstance(bt.get('rmse', None), (int, float)) else "N/A",
+                        "p75_WAPE": f"{bt.get('p75_mape', float('nan')):.3f}" if isinstance(bt.get('p75_mape', None), (int, float)) else "N/A",
+                        "p95_WAPE": f"{bt.get('p95_mape', float('nan')):.3f}" if isinstance(bt.get('p95_mape', None), (int, float)) else "N/A",
+                        "Folds": bt.get('iterations', bt.get('folds', 'N/A')),
+                        "BacktestMonths": bt.get('backtest_period', 'N/A'),
+                        "ValHorizon": bt.get('validation_horizon', 'N/A'),
+                        "Why_NA/Failed": bt_err if isinstance(bt_err, str) else ("N/A" if bt.get('success', True) else "Failed without error text")
+                    })
+
+            if rows:
+                df_bt = pd.DataFrame(rows)
+                st.dataframe(df_bt, use_container_width=True, hide_index=True)
+            else:
+                st.info("No backtesting rows available for the selected product.")
+
+        # === DOWNLOAD RESULTS (moved to bottom) ===
+        with st.expander("⬇️ Download Results (Best per Product • Backtesting)", expanded=False):
+            try:
+                df_dl = results.get("Best per Product (Backtesting)", pd.DataFrame())
+                if not df_dl.empty and {'Product','Date','ACR'}.issubset(df_dl.columns):
+                    if 'Type' in df_dl.columns:
+                        mask = df_dl['Type'].isin(['forecast', 'non-compliant-forecast'])
+                        df_dl = df_dl.loc[mask].copy()
+                    base_cols = [c for c in ['Product','Date','Type','ACR','BestModel'] if c in df_dl.columns]
+                    other_cols = [c for c in df_dl.columns if c not in base_cols]
+                    df_dl = df_dl[base_cols + other_cols]
+                    csv_bytes = df_dl.to_csv(index=False).encode('utf-8')
+                    st.download_button("Download CSV", csv_bytes, file_name="forecast_backtesting_best_per_product.csv", mime="text/csv")
+                else:
+                    st.caption("No downloadable forecast found for Backtesting view.")
+            except Exception:
+                st.caption("Download unavailable.")
 
         # Technical diagnostics
         with st.expander("🔍 **Technical Diagnostics**", expanded=False):

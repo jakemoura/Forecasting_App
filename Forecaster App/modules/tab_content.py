@@ -120,10 +120,10 @@ def render_model_guide_tab():
     # Key Metrics Section
     st.markdown("### 🎯 **Key Performance Metrics**")
     st.markdown("""
-    **MAPE (Mean Absolute Percentage Error)** - The primary accuracy measure:
-    - **What it means:** Average percentage difference between forecast and actual values
-    - **Why lower is better:** Shows how close forecasts are to reality
-    - **Example:** 10% MAPE = forecasts typically within 10% of actual values
+    **WAPE (Weighted Absolute Percentage Error)** - Primary accuracy measure:
+    - **What it means:** Dollar-weighted error: sum(|A−F|) / sum(|A|)
+    - **Why lower is better:** Aligns with revenue impact; robust to small denominators
+    - **Example:** 10% WAPE = dollar-weighted forecasts typically within 10% of actual values
     - **Interpretation:** 
       - 0-10% = Excellent accuracy 🎯
       - 10-20% = Good accuracy 📈  
@@ -144,8 +144,8 @@ def render_model_guide_tab():
     st.markdown("""
     **Smart Product-by-Product Selection (Recommended):**
     1. **Run all models** on each data product individually
-    2. **Test accuracy** using validation for each model-product combination
-    3. **Calculate all metrics** (MAPE, SMAPE, MASE, RMSE) for each model's predictions per product
+    2. **Test accuracy** using backtesting for each model-product combination
+    3. **Calculate all metrics** (WAPE, SMAPE, MASE, RMSE) for each model's predictions per product
     4. **Rank models** across all four metrics for each specific product
     5. **Winner per product:** Model with the **best average ranking across all metrics** for that specific product is selected
     6. **Hybrid approach:** Combine the best models for each product into one optimized forecast
@@ -153,8 +153,8 @@ def render_model_guide_tab():
     **Traditional Overall Selection (Alternative):**
     1. **Run all models** on your historical data
     2. **Test accuracy** using validation (unseen historical data)
-    3. **Calculate average MAPE** across all products for each model
-    4. **Winner:** Model with **lowest average MAPE** across all products
+    3. **Calculate average WAPE** across all products for each model
+    4. **Winner:** Model with **lowest average WAPE** across all products
     5. **Why this works:** The most accurate on historical data is likely most accurate for future predictions
     
     **Why Product-by-Product is Better:**
@@ -168,36 +168,21 @@ def render_model_guide_tab():
     st.markdown("### 🧭 **Smart Backtesting & Model Selection**")
     
     st.markdown("""
-    **Standard Selection (MAPE Rankings):**
-    - Uses validation metrics from train/test split
-    - Fast and reliable for most business cases
-    - Automatically applied to all models
-    
-    **Smart Backtesting:**
-    - Tests models on historical data you specify
-    - More months = more robust validation
-    - Automatically falls back to MAPE rankings if backtesting fails
-    
-    **Hybrid Selection:**
-    - Combines best of both approaches
-    - For each product, compares Standard vs Backtesting MAPEs
-    - Chooses the lower MAPE method automatically
+    **Backtesting‑Only Selection (WAPE‑first):**
+    - Models are selected per product strictly by cross‑validated backtesting WAPE
+    - Scoring: mean WAPE → p75 WAPE → MASE; unstable models are excluded (p95 > 2× mean)
+    - Eligibility: ≥24 months history and ≥2 folds (h=6); must beat Seasonal‑Naive by ≥5% WAPE and have MASE < 1.0
+    - If data is too short, we provisionally use Seasonal‑Naive (or ETS[A,A,A])
     """)
     
     st.markdown("### 🔎 **Backtesting Details**")
     
     st.markdown("""
     **How It Works:**
-    1. **Data Split**: Uses last X months (your choice) for testing
-    2. **Model Training**: Fits models on remaining historical data
-    3. **Validation**: Compares predictions to actual values
-    4. **Fallback**: If backtesting fails → uses MAPE rankings
-    
-    **Benefits:**
-    - **Data-Driven**: Recommendations based on your actual data volume
-    - **Smart Defaults**: Automatically suggests optimal backtesting periods
-    - **Reliable**: Never fails completely - always provides model rankings
-    - **Fast**: Simple validation vs complex academic methods
+    1. Expanding‑window backtests with step = 6 months, gap = 0, last 12–18 months
+    2. Compute WAPE/SMAPE/MASE/RMSE; selection uses WAPE only (others for tie‑breaks/diagnostics)
+    3. Cache results for speed and determinism; single‑threaded fits
+    4. Fallback to Seasonal‑Naive when CV cannot be run
     """)
     
     # Models Section
