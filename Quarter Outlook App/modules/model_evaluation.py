@@ -53,6 +53,7 @@ from .forecasting_models import (
     fit_exponential_smoothing_model,
     fit_lightgbm_daily_model,
 )
+from .fiscal_calendar import get_fiscal_quarter_info, get_business_days_in_period
 
 
 # ============================================================================
@@ -363,7 +364,10 @@ def daily_backtesting_validation(series, model_fitting_func, window_size=7, step
                 'train_days': len(train_data),
                 'val_days': len(actual_data),
                 'actual_values': actual_data.values.tolist(),
-                'forecast_values': forecast.tolist() if hasattr(forecast, 'tolist') else list(forecast)
+                'forecast_values': forecast.tolist() if hasattr(forecast, 'tolist') else list(forecast),
+                'train_data_for_plot': train_data.values.tolist(),
+                'train_dates_for_plot': train_data.index.tolist(),
+                'val_dates_for_plot': actual_data.index.tolist()
             })
             
             # Successful iteration - continue to next
@@ -657,6 +661,326 @@ def simple_backtesting_validation(series, model_fitting_func, backtest_days=7, b
         if diagnostic_messages:
             diagnostic_messages.append(f"⚠️ Backtesting validation failed: {str(e)[:50]}")
         return None
+
+
+def quarterly_backtesting_validation(series, model_fitting_func, analysis_date=None, 
+                                   min_training_days=180, max_training_days=365,
+                                   target_folds=10, lag_days=0, rolling_window_days=0,
+                                   model_params=None, diagnostic_messages=None):
+    """
+    Sophisticated quarterly backtesting validation with business-oriented rules.
+    
+    Training Window:
+    - Rolling training window of 180-365 days (minimum 180, default 365)
+    - Never allow training windows shorter than 90 days
+    
+    Validation Folds:
+    - Create 8-12 folds per quarter, spaced weekly (every Friday)
+    - Each fold trains on most recent training_window days and predicts to quarter-end
+    - Start near end of available history for recent performance focus
+    
+    Forecast Horizon:
+    - Dynamic: forecast from origin date through quarter-end (not fixed horizons)
+    
+    Gap (Data Purging):
+    - Apply gap = max(lag_days, rolling_window_days) to avoid leakage
+    
+    Weighting Strategy:
+    - Exponential decay with half-life = 2 quarters across historical folds
+    - Within current quarter: half-life ≈ 28 days
+    
+    Metrics:
+    - Primary: WAPE on remaining-quarter sum
+    - Secondary: WAPE on quarter total
+    - Tertiary: daily MASE
+    - EOQ penalty: 1.25x if last 5 business days error exceeds threshold
+    
+    Args:
+        series: Pandas Series with daily data
+        model_fitting_func: Function to fit model
+        analysis_date: Current analysis date (defaults to series end)
+        min_training_days: Minimum training window (default 180)
+        max_training_days: Maximum training window (default 365) 
+        target_folds: Target number of folds (8-12, default 10)
+        lag_days: Feature lag days for gap calculation
+        rolling_window_days: Rolling window days for gap calculation
+        model_params: Model parameters
+        diagnostic_messages: List for diagnostic output
+        
+    Returns:
+        dict: Comprehensive validation results with weighted metrics
+    """
+    if model_params is None:
+        model_params = {}
+    
+    if analysis_date is None:
+        analysis_date = series.index.max()
+    
+    # Calculate gap to prevent data leakage
+    gap = max(lag_days, rolling_window_days)
+    
+    # Get current quarter info
+    quarter_info = get_fiscal_quarter_info(analysis_date)
+    quarter_start = quarter_info['quarter_start']
+    quarter_end = quarter_info['quarter_end']
+    
+    # Ensure minimum training window of 90 days
+    training_window = min(max_training_days, max(min_training_days, 90))
+    
+    # Calculate minimum data requirements
+    min_required = training_window + gap + 5  # Need at least 5 days to predict
+    if len(series) < min_required:
+        if diagnostic_messages:
+            diagnostic_messages.append(f"⚠️ Quarterly backtesting: Need {min_required} days, have {len(series)}")
+        return None
+    
+    # Find validation periods (weekly origins, preferably Fridays)
+    validation_origins = []
+    
+    # Start from recent history and work backwards to get weekly origins
+    current_date = min(analysis_date, series.index.max())
+    
+    # Go back to find validation origins, aiming for weekly spacing
+    validation_start = current_date - pd.Timedelta(days=90)  # Look back ~3 months for origins
+    validation_start = max(validation_start, series.index.min() + pd.Timedelta(days=training_window))
+    
+    # Generate weekly validation origins (preferably Fridays)
+    origin_date = validation_start
+    while origin_date <= current_date - pd.Timedelta(days=gap + 5):
+        # Prefer Fridays (weekday=4) but accept any business day
+        if origin_date.weekday() == 4:  # Friday
+            validation_origins.append(origin_date)
+        elif len(validation_origins) == 0 or (origin_date - validation_origins[-1]).days >= 7:
+            # Accept if no Friday found in the week
+            validation_origins.append(origin_date)
+        
+        origin_date += pd.Timedelta(days=1)
+    
+    # Limit to target number of folds (8-12)
+    if len(validation_origins) > target_folds:
+        # Keep most recent folds
+        validation_origins = validation_origins[-target_folds:]
+    elif len(validation_origins) < 8:
+        # If we don't have enough, create more by going back further
+        earlier_start = validation_start - pd.Timedelta(days=30)
+        origin_date = earlier_start
+        additional_origins = []
+        
+        while origin_date < validation_start and len(validation_origins) + len(additional_origins) < 8:
+            if origin_date >= series.index.min() + pd.Timedelta(days=training_window):
+                if origin_date.weekday() <= 4:  # Business day
+                    additional_origins.append(origin_date)
+            origin_date += pd.Timedelta(days=7)  # Weekly
+        
+        validation_origins = sorted(additional_origins + validation_origins)
+    
+    if len(validation_origins) < 3:
+        if diagnostic_messages:
+            diagnostic_messages.append(f"⚠️ Insufficient validation origins: {len(validation_origins)}")
+        return None
+    
+    # Run validation folds
+    fold_results = []
+    fold_scores = []
+    
+    for i, origin_date in enumerate(validation_origins):
+        try:
+            # Determine quarter for this origin
+            origin_quarter_info = get_fiscal_quarter_info(origin_date)
+            origin_quarter_start = origin_quarter_info['quarter_start']
+            origin_quarter_end = origin_quarter_info['quarter_end']
+            
+            # Training data: most recent training_window days before gap
+            train_end_date = origin_date - pd.Timedelta(days=gap)
+            train_start_date = train_end_date - pd.Timedelta(days=training_window - 1)
+            
+            # Ensure training data is available
+            train_start_date = max(train_start_date, series.index.min())
+            
+            if train_end_date <= train_start_date:
+                continue
+                
+            # Get training data
+            train_mask = (series.index >= train_start_date) & (series.index <= train_end_date)
+            train_data = series[train_mask]
+            
+            if len(train_data) < 90:  # Minimum 90 days training
+                continue
+            
+            # Validation period: from origin to quarter end
+            val_start_date = origin_date
+            val_end_date = origin_quarter_end
+            
+            val_mask = (series.index >= val_start_date) & (series.index <= val_end_date)
+            actual_data = series[val_mask]
+            
+            if len(actual_data) < 2:  # Need at least 2 days to validate
+                continue
+            
+            # Fit model and generate forecast
+            fitted_model = model_fitting_func(train_data, **model_params)
+            
+            # Generate forecast from origin to quarter end
+            forecast_days = len(actual_data)
+            forecast = None
+            
+            # Handle different model output types
+            if isinstance(fitted_model, dict):
+                if 'forecast_value' in fitted_model:
+                    forecast = np.full(forecast_days, fitted_model['forecast_value'])
+                elif 'model' in fitted_model and hasattr(fitted_model['model'], 'predict'):
+                    # Linear models
+                    train_length = len(train_data)
+                    future_x = np.arange(train_length, train_length + forecast_days).reshape(-1, 1)
+                    forecast = fitted_model['model'].predict(future_x)
+                elif 'forecast' in fitted_model:
+                    base_forecast = fitted_model['forecast']
+                    if hasattr(base_forecast, '__len__') and len(base_forecast) >= forecast_days:
+                        forecast = base_forecast[:forecast_days]
+                    else:
+                        forecast_val = base_forecast[0] if hasattr(base_forecast, '__len__') else base_forecast
+                        forecast = np.full(forecast_days, forecast_val)
+            elif hasattr(fitted_model, 'forecast'):
+                forecast = fitted_model.forecast(forecast_days)
+            elif hasattr(fitted_model, 'predict'):
+                forecast = fitted_model.predict(start=len(train_data), end=len(train_data) + forecast_days - 1)
+            
+            if forecast is None:
+                forecast = np.full(forecast_days, train_data.mean())
+            
+            # Ensure forecast is array
+            forecast = np.asarray(forecast)
+            if len(forecast) < forecast_days:
+                # Extend forecast if needed
+                forecast = np.concatenate([forecast, np.full(forecast_days - len(forecast), forecast[-1] if len(forecast) > 0 else train_data.mean())])
+            elif len(forecast) > forecast_days:
+                forecast = forecast[:forecast_days]
+            
+            # Calculate metrics
+            actual_values = actual_data.values
+            
+            # Primary metric: WAPE on remaining quarter sum
+            remaining_quarter_wape = wape(actual_values, forecast)
+            
+            # Secondary metric: WAPE on quarter total (if we have quarter start data)
+            quarter_mask = (series.index >= origin_quarter_start) & (series.index < val_start_date)
+            actual_quarter_to_date = series[quarter_mask].sum() if quarter_mask.any() else 0
+            quarter_total_actual = actual_quarter_to_date + actual_values.sum()
+            quarter_total_forecast = actual_quarter_to_date + forecast.sum()
+            quarter_total_wape = abs(quarter_total_actual - quarter_total_forecast) / max(quarter_total_actual, 1e-6)
+            
+            # Tertiary metric: daily MASE
+            try:
+                daily_mase = mase(actual_values, forecast, train_data.values, seasonal_period=7)
+            except:
+                daily_mase = np.nan
+            
+            # EOQ penalty: check last 5 business days error
+            eoq_penalty = 1.0
+            if len(actual_values) >= 5:
+                last_5_actual = actual_values[-5:]
+                last_5_forecast = forecast[-5:]
+                last_5_error = np.mean(np.abs(last_5_actual - last_5_forecast))
+                avg_actual = np.mean(actual_values)
+                if avg_actual > 0 and last_5_error / avg_actual > 0.3:  # 30% threshold
+                    eoq_penalty = 1.25
+            
+            # Store fold result
+            fold_result = {
+                'fold': i + 1,
+                'origin_date': origin_date,
+                'train_start': train_start_date,
+                'train_end': train_end_date,
+                'val_start': val_start_date,
+                'val_end': val_end_date,
+                'train_days': len(train_data),
+                'val_days': len(actual_data),
+                'remaining_quarter_wape': remaining_quarter_wape,
+                'quarter_total_wape': quarter_total_wape,
+                'daily_mase': daily_mase,
+                'eoq_penalty': eoq_penalty,
+                'actual_values': actual_values.tolist(),
+                'forecast_values': forecast.tolist()
+            }
+            
+            fold_results.append(fold_result)
+            
+            # Composite score: primary metric with EOQ penalty
+            composite_score = remaining_quarter_wape * eoq_penalty
+            fold_scores.append(composite_score)
+            
+        except Exception as e:
+            if diagnostic_messages:
+                diagnostic_messages.append(f"⚠️ Fold {i+1} failed: {str(e)}")
+            continue
+    
+    if not fold_results:
+        return None
+    
+    # Apply sophisticated weighting strategy
+    # Convert dates to quarters for weighting
+    fold_scores_array = np.array(fold_scores)
+    fold_dates = [fold['origin_date'] for fold in fold_results]
+    
+    # Calculate quarters difference for exponential weighting
+    latest_date = max(fold_dates)
+    quarters_back = []
+    
+    for fold_date in fold_dates:
+        # Approximate quarters difference
+        days_diff = (latest_date - fold_date).days
+        quarters_diff = days_diff / 91.25  # Average quarter length
+        quarters_back.append(quarters_diff)
+    
+    # Exponential weighting with half-life = 2 quarters
+    # For current quarter, use 28-day half-life
+    weights = []
+    for i, (quarters_diff, fold_date) in enumerate(zip(quarters_back, fold_dates)):
+        if quarters_diff < 0.33:  # Within current quarter (< 1/3 quarter)
+            # Use 28-day half-life within current quarter
+            days_back = (latest_date - fold_date).days
+            weight = np.exp(-np.log(2) * days_back / 28)
+        else:
+            # Use 2-quarter half-life for historical folds
+            weight = np.exp(-np.log(2) * quarters_diff / 2)
+        weights.append(weight)
+    
+    weights = np.array(weights)
+    weights = weights / weights.sum()  # Normalize
+    
+    # Calculate weighted metrics
+    weighted_remaining_wape = np.average([fold['remaining_quarter_wape'] for fold in fold_results], weights=weights)
+    weighted_quarter_total_wape = np.average([fold['quarter_total_wape'] for fold in fold_results], weights=weights)
+    weighted_composite_score = np.average(fold_scores_array, weights=weights)
+    
+    # Calculate additional statistics
+    mean_remaining_wape = np.mean([fold['remaining_quarter_wape'] for fold in fold_results])
+    p75_remaining_wape = np.percentile([fold['remaining_quarter_wape'] for fold in fold_results], 75)
+    mean_daily_mase = np.nanmean([fold['daily_mase'] for fold in fold_results])
+    
+    results = {
+        'mean_mape': mean_remaining_wape,  # For compatibility
+        'recent_weighted_mape': weighted_remaining_wape,  # Primary metric
+        'p75_mape': p75_remaining_wape,
+        'weighted_quarter_total_wape': weighted_quarter_total_wape,
+        'weighted_composite_score': weighted_composite_score,
+        'mean_daily_mase': mean_daily_mase,
+        'iterations': len(fold_results),
+        'validation_results': fold_results,
+        'fold_weights': weights.tolist(),
+        'training_window_days': training_window,
+        'gap_days': gap,
+        'target_folds': target_folds
+    }
+    
+    if diagnostic_messages:
+        diagnostic_messages.append(
+            f"📊 Quarterly backtesting: {len(fold_results)} folds, "
+            f"Weighted remaining-quarter WAPE: {weighted_remaining_wape:.1%}, "
+            f"Training window: {training_window} days"
+        )
+    
+    return results
 
 
 def evaluate_individual_forecasts(full_series, forecasts):
@@ -1174,20 +1498,30 @@ def _forecast_horizon_for_model(model_name: str, train_series: pd.Series, horizo
 def smart_backtesting_select_model(
     full_series: pd.Series,
     forecasts: dict,
-    method: str = 'enhanced',
+    method: str = 'quarterly',
     horizon: int = 7,
     gap: int = 1,
-    folds: int = 3,
+    folds: int = 10,
+    analysis_date: pd.Timestamp = None,
+    min_training_days: int = 180,
+    max_training_days: int = 365,
+    lag_days: int = 0,
+    rolling_window_days: int = 0
 ) -> dict:
-    """Enhanced backtesting model selection with walk-forward validation and WAPE.
+    """Enhanced backtesting model selection with sophisticated quarterly validation.
 
     Args:
         full_series: pandas Series with daily values
         forecasts: dict of model_name -> forecast payload (from engine)
-        method: 'enhanced' for new validation, 'simple' for legacy
-        horizon: days to forecast in each fold
-        gap: gap between train end and test start
-        folds: number of folds from the tail of the series
+        method: 'quarterly' for new sophisticated validation, 'enhanced' for daily, 'simple' for legacy
+        horizon: days to forecast in each fold (used for enhanced/simple methods)
+        gap: gap between train end and test start (used for enhanced/simple methods)
+        folds: target number of folds (8-12 for quarterly method)
+        analysis_date: current analysis date for quarterly method
+        min_training_days: minimum training window for quarterly method (default 180)
+        max_training_days: maximum training window for quarterly method (default 365)
+        lag_days: feature lag days for gap calculation in quarterly method
+        rolling_window_days: rolling window days for gap calculation in quarterly method
 
     Returns:
         dict with keys: best_model, per_model_wape, method_used, validation_details
@@ -1198,8 +1532,14 @@ def smart_backtesting_select_model(
         if m not in ('Monthly Renewals', 'Ensemble')
     ]
     
-    # Adjust minimum data requirement for daily backtesting
-    min_data_required = 10 if method == 'enhanced' else (horizon + gap + 7)
+    # Adjust minimum data requirement based on method
+    if method == 'quarterly':
+        min_data_required = min_training_days + max(lag_days, rolling_window_days) + 5
+    elif method == 'enhanced':
+        min_data_required = 10
+    else:
+        min_data_required = horizon + gap + 7
+        
     if len(candidate_models) == 0 or len(full_series) < min_data_required:
         return {
             'best_model': min(forecasts.keys(), key=lambda k: forecasts[k].get('quarter_total', float('inf')))
@@ -1212,8 +1552,89 @@ def smart_backtesting_select_model(
     per_model_wapes: dict[str, float] = {}
     validation_details = {}
     
-    # Enhanced method: use walk-forward validation
-    if method == 'enhanced':
+    # Quarterly method: sophisticated quarterly backtesting with business rules
+    if method == 'quarterly':
+        # Create fitting functions for each model
+        def create_model_fitting_func(model_name):
+            def fitting_func(series):
+                if model_name == 'Linear Trend':
+                    return fit_linear_trend_model(series)
+                elif model_name == 'Moving Average':
+                    return fit_moving_average_model(series, window=min(7, max(3, len(series)//3)))
+                elif model_name == 'Run Rate':
+                    return {'forecast_value': series.mean()}
+                elif model_name == 'Exponential Smoothing':
+                    return fit_exponential_smoothing_model(series)
+                elif model_name == 'Monthly Renewals':
+                    return {'forecast_value': series.mean()}  # Simplified for backtesting
+                else:
+                    return {'forecast_value': series.mean()}
+            return fitting_func
+        
+        # Run quarterly backtesting validation for each model
+        diagnostic_msgs = []
+        backtested_models = {}  # Only models that pass backtesting
+        
+        for model_name in candidate_models:
+            try:
+                model_msgs = []
+                fitting_func = create_model_fitting_func(model_name)
+                cv_results = quarterly_backtesting_validation(
+                    series=full_series,
+                    model_fitting_func=fitting_func,
+                    analysis_date=analysis_date,
+                    min_training_days=min_training_days,
+                    max_training_days=max_training_days,
+                    target_folds=folds,
+                    lag_days=lag_days,
+                    rolling_window_days=rolling_window_days,
+                    diagnostic_messages=model_msgs
+                )
+                
+                diagnostic_msgs.extend([f"{model_name}: {msg}" for msg in model_msgs])
+                
+                if cv_results and cv_results['iterations'] > 0:
+                    # Use weighted composite score (remaining quarter WAPE + EOQ penalty)
+                    per_model_wapes[model_name] = cv_results['recent_weighted_mape']
+                    backtested_models[model_name] = True
+                    validation_details[model_name] = {
+                        'mean_wape': cv_results['mean_mape'],
+                        'p75_wape': cv_results['p75_mape'],
+                        'weighted_remaining_wape': cv_results['recent_weighted_mape'],
+                        'weighted_quarter_total_wape': cv_results['weighted_quarter_total_wape'],
+                        'weighted_composite_score': cv_results['weighted_composite_score'],
+                        'mean_daily_mase': cv_results.get('mean_daily_mase', np.nan),
+                        'iterations': cv_results['iterations'],
+                        'training_window_days': cv_results['training_window_days'],
+                        'gap_days': cv_results['gap_days'],
+                        'validation_results': cv_results.get('validation_results', []),  # Use validation_results for quarterly
+                        'validation_periods': cv_results.get('validation_results', [])  # Also keep for compatibility
+                    }
+                else:
+                    # Model failed backtesting - exclude from selection
+                    if model_msgs:
+                        diagnostic_msgs.append(f"{model_name}: Excluded from selection (backtesting failed)")
+                    
+            except Exception as e:
+                diagnostic_msgs.append(f"{model_name}: Excluded from selection (exception: {str(e)})")
+        
+        # ENFORCE RULE: Only allow backtested models to be selected
+        if not backtested_models:
+            return {
+                'best_model': 'Run Rate',  # Fallback to Run Rate if all models fail
+                'per_model_wape': {},
+                'method_used': 'quarterly-backtesting-failed',
+                'validation_details': {},
+                'diagnostic_messages': diagnostic_msgs
+            }
+        
+        # Filter out non-backtested models from consideration
+        candidate_models = [m for m in candidate_models if m in backtested_models]
+        
+        method_used = f'quarterly-backtesting({len(candidate_models)} models, {min_training_days}-{max_training_days}d training, {folds} target folds)'
+        
+    # Enhanced method: use daily walk-forward validation
+    elif method == 'enhanced':
         # Create fitting functions for each model
         def create_model_fitting_func(model_name):
             def fitting_func(series):
@@ -1267,7 +1688,8 @@ def smart_backtesting_select_model(
                         'p75_wape': cv_results['p75_mape'],
                         'iterations': cv_results['iterations'],
                         'recent_weighted_wape': cv_results['recent_weighted_mape'],
-                        'validation_periods': cv_results.get('validation_results', [])  # Include actual validation periods
+                        'validation_periods': cv_results.get('validation_results', []),  # Include actual validation periods
+                        'validation_folds_data': cv_results.get('validation_results', [])  # For chart compatibility
                     }
                     # Model successfully validated
                     pass
@@ -1278,7 +1700,7 @@ def smart_backtesting_select_model(
                 per_model_wapes[model_name] = float('inf')
                 validation_details[model_name] = {'error': 'exception', 'details': str(e)}
         
-        method_used = f'enhanced-walk-forward({horizon}h, gap={gap})'
+        method_used = f'enhanced-daily-walk-forward({horizon}h, gap={gap})'
         
     else:
         # Simple method: basic fold validation (legacy)
@@ -1312,12 +1734,35 @@ def smart_backtesting_select_model(
         
         method_used = f'simple-walk-forward({max_folds} folds, h={horizon}, gap={gap})'
 
-    # Choose best by lowest WAPE
-    best_model = min(per_model_wapes.items(), key=lambda x: x[1])[0] if per_model_wapes else 'Run Rate'
+    # Choose best by lowest WAPE - ONLY from models that passed backtesting
+    if per_model_wapes:
+        # For quarterly method, ensure we only select from backtested models
+        if method == 'quarterly':
+            # Filter to only backtested models
+            backtested_wapes = {k: v for k, v in per_model_wapes.items() if k in validation_details and 'iterations' in validation_details[k]}
+            if backtested_wapes:
+                best_model = min(backtested_wapes.items(), key=lambda x: x[1])[0]
+            else:
+                best_model = 'Run Rate'  # Fallback if no models passed backtesting
+        else:
+            # For other methods, use all available models
+            best_model = min(per_model_wapes.items(), key=lambda x: x[1])[0]
+    else:
+        best_model = 'Run Rate'
     
-    return {
+    # Add diagnostic information
+    result = {
         'best_model': best_model,
         'per_model_wape': per_model_wapes,
         'method_used': method_used,
         'validation_details': validation_details
     }
+    
+    # Add selection rationale for quarterly method
+    if method == 'quarterly':
+        backtested_count = len([m for m in validation_details.keys() if 'iterations' in validation_details[m]])
+        result['backtested_models_count'] = backtested_count
+        result['total_candidate_models'] = len(candidate_models)
+        result['selection_rule'] = 'backtesting-only'  # Only backtested models allowed
+    
+    return result

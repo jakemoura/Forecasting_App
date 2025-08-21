@@ -248,49 +248,54 @@ def create_forecast_visualization(quarter_data, forecasts, quarter_info, selecte
     # Prepare backtesting validation markers and trends (if available)
     if backtesting_results and backtesting_results.get('validation_details'):
         validation_details = backtesting_results['validation_details'].get(selected_model, {})
-        validation_periods = validation_details.get('validation_periods', [])
         
-        if validation_periods:
-            # Show ACTUAL validation periods (not fake sample points)
+        # Direct access to quarterly validation_results without conversion
+        if 'validation_results' in validation_details:
+            quarterly_results = validation_details['validation_results']
+            
             val_markers_data = []
             prediction_segments = []
             
-            for i, period in enumerate(validation_periods):
+            for i, result in enumerate(quarterly_results):
                 try:
-                    # Validation start marker (where prediction begins)
-                    val_start = pd.to_datetime(period['val_start'])
-                    if val_start in quarter_data.index:
+                    # Get validation period info
+                    val_start_date = pd.to_datetime(result.get('val_start'))
+                    val_end_date = pd.to_datetime(result.get('val_end'))
+                    forecast_values = result.get('forecast_values', [])
+                    fold_num = result.get('fold', i + 1)
+                    
+                    # Add validation start marker (green triangle)
+                    if val_start_date in quarter_data.index:
                         val_markers_data.append({
-                            'Date': val_start,
-                            'Value': quarter_data.loc[val_start],
+                            'Date': val_start_date,
+                            'Value': quarter_data.loc[val_start_date],
                             'Type': 'Validation Start',
-                            'Model': f'Fold {period["iteration"]} ({period["val_days"]}d prediction)'
+                            'Model': f'Fold {fold_num} ({len(forecast_values)}d prediction)'
                         })
                     
-                    # Create prediction trend for this validation fold
-                    val_start_date = pd.to_datetime(period['val_start'])
-                    val_end_date = pd.to_datetime(period['val_end'])
-                    forecast_values = period.get('forecast_values', [])
-                    
+                    # Add prediction trends (purple dotted lines)
                     if forecast_values and len(forecast_values) > 0:
-                        # Create dates for the prediction period
-                        pred_dates = pd.date_range(val_start_date, val_end_date, freq='D')
-                        pred_dates = pred_dates[:len(forecast_values)]  # Match forecast length
+                        # Create dates for forecast period
+                        forecast_dates = pd.date_range(val_start_date, periods=len(forecast_values), freq='D')
                         
-                        for j, (pred_date, pred_value) in enumerate(zip(pred_dates, forecast_values)):
-                            prediction_segments.append({
-                                'Date': pred_date,
-                                'Value': float(pred_value),
-                                'Type': 'Backtesting Prediction',
-                                'Model': f'Fold {period["iteration"]} Prediction',
-                                'Fold': period['iteration']
-                            })
-                            
+                        for j, (pred_date, pred_value) in enumerate(zip(forecast_dates, forecast_values)):
+                            try:
+                                pred_value = float(pred_value)
+                                if not pd.isna(pred_value) and pred_value != float('inf'):
+                                    prediction_segments.append({
+                                        'Date': pred_date,
+                                        'Value': pred_value,
+                                        'Type': 'Backtesting Prediction',
+                                        'Model': f'Fold {fold_num} Prediction',
+                                        'Fold': str(fold_num)
+                                    })
+                            except (ValueError, TypeError):
+                                continue
+                                
                 except (KeyError, ValueError, TypeError) as e:
-                    # Skip invalid periods
                     continue
             
-            # Add validation start markers (green triangles)
+            # Add validation markers (green triangles)
             if val_markers_data:
                 validation_df = pd.DataFrame(val_markers_data)
                 validation_markers = alt.Chart(validation_df).mark_point(
@@ -303,31 +308,83 @@ def create_forecast_visualization(quarter_data, forecasts, quarter_info, selecte
                 ).encode(
                     x=alt.X('Date:T'),
                     y=alt.Y('Value:Q'),
-                    tooltip=[
-                        'Date:T', 
-                        'Value:Q', 
-                        alt.Tooltip('Model:N', title='Validation Fold')
-                    ]
+                    tooltip=['Date:T', 'Value:Q', alt.Tooltip('Model:N', title='Validation Fold')]
                 )
                 chart_layers.append(validation_markers)
             
-            # Add backtesting prediction trends (dotted purple lines)
+            # Add prediction lines (purple dotted)
             if prediction_segments:
                 predictions_df = pd.DataFrame(prediction_segments)
                 prediction_lines = alt.Chart(predictions_df).mark_line(
                     color='purple',
-                    strokeWidth=2,
-                    strokeDash=[3, 3],
-                    opacity=0.7
+                    strokeWidth=4,
+                    strokeDash=[8, 4],
+                    opacity=1.0
                 ).encode(
                     x=alt.X('Date:T'),
                     y=alt.Y('Value:Q'),
-                    color=alt.Color('Fold:N', scale=alt.Scale(scheme='category10'), legend=None),
-                    tooltip=[
-                        'Date:T',
-                        'Value:Q',
-                        alt.Tooltip('Model:N', title='Validation Prediction')
-                    ]
+                    detail=alt.Detail('Fold:N'),
+                    tooltip=['Date:T', 'Value:Q', alt.Tooltip('Model:N', title='Validation Prediction')]
+                )
+                chart_layers.append(prediction_lines)
+        
+        # Handle enhanced/simple backtesting format (validation_periods)
+        elif 'validation_periods' in validation_details:
+            validation_periods = validation_details['validation_periods']
+            
+            val_markers_data = []
+            prediction_segments = []
+            
+            for period in validation_periods:
+                try:
+                    val_start = pd.to_datetime(period['val_start'])
+                    forecast_values = period.get('forecast_values', [])
+                    fold_num = period.get('iteration', 1)
+                    
+                    # Add validation marker
+                    if val_start in quarter_data.index:
+                        val_markers_data.append({
+                            'Date': val_start,
+                            'Value': quarter_data.loc[val_start],
+                            'Type': 'Validation Start',
+                            'Model': f'Fold {fold_num}'
+                        })
+                    
+                    # Add predictions
+                    if forecast_values and len(forecast_values) > 0:
+                        val_end = pd.to_datetime(period['val_end'])
+                        pred_dates = pd.date_range(val_start, val_end, freq='D')[:len(forecast_values)]
+                        
+                        for pred_date, pred_value in zip(pred_dates, forecast_values):
+                            try:
+                                prediction_segments.append({
+                                    'Date': pred_date,
+                                    'Value': float(pred_value),
+                                    'Type': 'Backtesting Prediction',
+                                    'Model': f'Fold {fold_num} Prediction',
+                                    'Fold': str(fold_num)
+                                })
+                            except (ValueError, TypeError):
+                                continue
+                                
+                except (KeyError, ValueError, TypeError):
+                    continue
+            
+            # Add charts
+            if val_markers_data:
+                validation_df = pd.DataFrame(val_markers_data)
+                validation_markers = alt.Chart(validation_df).mark_point(
+                    shape='triangle-up', size=120, color='green', opacity=0.8
+                ).encode(x=alt.X('Date:T'), y=alt.Y('Value:Q'), tooltip=['Date:T', 'Value:Q'])
+                chart_layers.append(validation_markers)
+            
+            if prediction_segments:
+                predictions_df = pd.DataFrame(prediction_segments)
+                prediction_lines = alt.Chart(predictions_df).mark_line(
+                    color='purple', strokeWidth=4, strokeDash=[8, 4], opacity=1.0
+                ).encode(
+                    x=alt.X('Date:T'), y=alt.Y('Value:Q'), detail=alt.Detail('Fold:N'),
+                    tooltip=['Date:T', 'Value:Q']
                 )
                 chart_layers.append(prediction_lines)
     
@@ -345,11 +402,16 @@ def create_forecast_visualization(quarter_data, forecasts, quarter_info, selecte
         if bt_wape is not None and bt_wape != float('inf'):
             base_title += f" | Backtesting WAPE: {bt_wape:.1%}"
             
-            # Add validation details
+            # Add validation details and method info
             validation_details = backtesting_results.get('validation_details', {}).get(selected_model, {})
             iterations = validation_details.get('iterations', 0)
+            method_used = backtesting_results.get('method_used', '')
+            
             if iterations > 0:
-                base_title += f" | ✓ {iterations} Recent Validation Folds"
+                if 'quarterly' in method_used.lower():
+                    base_title += f" | ✓ {iterations} Quarterly Validation Folds"
+                else:
+                    base_title += f" | ✓ {iterations} Recent Validation Folds"
     
     # Combine all chart layers
     chart = alt.layer(*chart_layers).resolve_scale(
@@ -358,6 +420,16 @@ def create_forecast_visualization(quarter_data, forecasts, quarter_info, selecte
         width=700,
         height=350,
         title=base_title
+    )
+    
+    # Add updated legend explanation below chart
+    st.caption(
+        "📊 **Chart Legend:** "
+        "Blue line = Historical data | "
+        "Orange dashed = Forecast | "
+        "Red circles = Monthly renewal spikes | "
+        "Green triangles = Backtesting validation points | "
+        "Purple dotted = Backtesting prediction trends"
     )
     
     return chart, selected_model
@@ -517,11 +589,21 @@ def display_backtesting_details(backtesting_results):
     validation_data = []
     for model_name, details in validation_details.items():
         if isinstance(details, dict) and 'error' not in details:
+            # Handle different validation method key naming
+            if 'weighted_remaining_wape' in details:  # Quarterly backtesting
+                mean_wape = details.get('mean_wape', 0)
+                p75_wape = details.get('p75_wape', 0) 
+                recent_weighted = details.get('weighted_remaining_wape', 0)
+            else:  # Enhanced/simple methods
+                mean_wape = details.get('mean_wape', 0)
+                p75_wape = details.get('p75_wape', 0)
+                recent_weighted = details.get('recent_weighted_wape', 0)
+                
             row = {
                 'Model': model_name,
-                'Mean WAPE': f"{details.get('mean_wape', 0):.1%}",
-                'P75 WAPE': f"{details.get('p75_wape', 0):.1%}",
-                'Recent Weighted WAPE': f"{details.get('recent_weighted_wape', 0):.1%}",
+                'Mean WAPE': f"{mean_wape:.1%}",
+                'P75 WAPE': f"{p75_wape:.1%}",
+                'Recent Weighted WAPE': f"{recent_weighted:.1%}",
                 'Iterations': details.get('iterations', 0)
             }
             validation_data.append(row)

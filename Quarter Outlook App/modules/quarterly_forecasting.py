@@ -314,9 +314,25 @@ def forecast_quarter_completion(series, current_date=None, detect_spikes=True, s
     # Evaluate models using WAPE (Weighted Absolute Percentage Error)
     wape_scores = evaluate_individual_forecasts(series, forecasts)  # Use full series for evaluation
     
-    # Perform daily backtesting validation optimized for quarterly forecasting
+    # Perform sophisticated quarterly backtesting validation 
     backtesting_results = {}
-    if len(series) >= 14:  # Need at least 2 weeks of data for meaningful daily backtesting
+    min_required_for_quarterly = 180 + 7  # 180 days training + some buffer
+    
+    if len(series) >= min_required_for_quarterly:
+        # Use sophisticated quarterly backtesting
+        backtesting_results = smart_backtesting_select_model(
+            full_series=series,
+            forecasts=forecasts,
+            method='quarterly',  # Use sophisticated quarterly backtesting
+            analysis_date=current_date,
+            min_training_days=180,   # 6 months minimum training
+            max_training_days=365,   # 1 year maximum training
+            folds=10,               # Target 10 weekly validation folds
+            lag_days=0,             # No feature lags for basic models
+            rolling_window_days=7   # 7-day rolling averages (gap for data purging)
+        )
+    elif len(series) >= 14:
+        # Fallback to enhanced daily backtesting for shorter series
         backtesting_results = smart_backtesting_select_model(
             full_series=series,
             forecasts=forecasts,
@@ -372,7 +388,8 @@ def forecast_quarter_completion(series, current_date=None, detect_spikes=True, s
             
             # Debug output
             bt_wape_str = f"{backtesting_results['per_model_wape'].get(model_name, float('inf')):.3f}" if model_name in backtesting_results.get('per_model_wape', {}) else "N/A"
-            print(f"[DEBUG] {model_name}: WAPE={wape_score:.3f}, BT_WAPE={bt_wape_str}, Final Score={enhanced_score:.1f}")
+            method_used = backtesting_results.get('method_used', 'unknown')
+            print(f"[DEBUG] {model_name}: WAPE={wape_score:.3f}, BT_WAPE={bt_wape_str}, Method={method_used}, Final Score={enhanced_score:.1f}")
     
     # Use enhanced scores for model selection (combining WAPE + Backtesting)
     final_model_scores = enhanced_model_scores if enhanced_model_scores else wape_scores

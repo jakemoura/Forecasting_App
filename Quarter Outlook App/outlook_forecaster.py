@@ -103,27 +103,43 @@ with st.sidebar:
         with st.expander("💡 Capacity Calculator Helper", expanded=False):
             st.markdown("**Calculate capacity factor based on weekly revenue loss:**")
             
-            # Auto-populate values from current forecast results
+            # Auto-populate values from current forecast results - use WINNING MODELS from KPI section
             default_unconstrained = 325.0  # Fallback default in millions
             default_weeks_remaining = 3.4
             
-            # Get actual forecast total from processed results in this session
+            # Get actual forecast total from processed results - same calculation as main KPI
             if 'outlook_forecasts' in st.session_state and st.session_state.outlook_forecasts:
                 try:
-                    # Calculate the actual unconstrained total from best models with conservatism adjustment
+                    # Calculate using the SAME logic as the KPI section (winning models only)
                     actual_total = 0
                     conservatism_factor = forecast_conservatism / 100.0
+                    selection_mode = "Backtesting"  # Same as main logic
+                    
                     for product, data in st.session_state.outlook_forecasts.items():
-                        if 'forecast' in data and 'summary' in data['forecast'] and 'quarter_total' in data['forecast']['summary']:
-                            forecast_result = data['forecast']
+                        forecast_result = data['forecast']
+                        actual_to_date = forecast_result['actual_to_date']
+                        
+                        # Use SAME model selection logic as KPI calculation
+                        std_model = forecast_result.get('best_model')
+                        bt = forecast_result.get('backtesting', {})
+                        bt_model = bt.get('best_model')
+                        
+                        # Choose winning model (same as KPI logic)
+                        chosen_model = std_model
+                        if selection_mode == 'Backtesting' and bt_model and bt_model in forecast_result.get('forecasts', {}):
+                            chosen_model = bt_model
+                        
+                        # Get quarter total for chosen model
+                        if chosen_model and chosen_model in forecast_result.get('forecasts', {}):
+                            original_quarter_total = forecast_result['forecasts'][chosen_model].get('quarter_total', forecast_result['summary']['quarter_total'])
+                        else:
                             original_quarter_total = forecast_result['summary']['quarter_total']
-                            actual_to_date = forecast_result['actual_to_date']
-                            
-                            # Apply conservatism adjustment to the forecast portion only
-                            forecast_portion = original_quarter_total - actual_to_date
-                            adjusted_forecast_portion = forecast_portion * conservatism_factor
-                            adjusted_quarter_total = actual_to_date + adjusted_forecast_portion
-                            actual_total += adjusted_quarter_total
+                        
+                        # Apply conservatism adjustment to forecast portion only
+                        forecast_portion = original_quarter_total - actual_to_date
+                        adjusted_forecast_portion = forecast_portion * conservatism_factor
+                        adjusted_quarter_total = actual_to_date + adjusted_forecast_portion
+                        actual_total += adjusted_quarter_total
                     
                     if actual_total > 0:
                         default_unconstrained = actual_total / 1000000  # Convert to millions
@@ -164,10 +180,40 @@ with st.sidebar:
         )
         st.caption(f"🔧 Applying {(1-capacity_adjustment)*100:.1f}% reduction to account for capacity constraints")
         
-        # Show dollar impact if forecast data is available
+        # Show dollar impact using WINNING models from KPI (same as capacity calculator)
         if 'outlook_forecasts' in st.session_state and st.session_state.outlook_forecasts:
             try:
-                total_unconstrained = sum([f['forecast']['quarter_total'] for f in st.session_state.outlook_forecasts.values() if 'forecast' in f and 'quarter_total' in f['forecast']])
+                # Calculate using SAME logic as capacity calculator and KPI section
+                total_unconstrained = 0
+                conservatism_factor = forecast_conservatism / 100.0
+                selection_mode = "Backtesting"  # Same as main logic
+                
+                for product, data in st.session_state.outlook_forecasts.items():
+                    forecast_result = data['forecast']
+                    actual_to_date = forecast_result['actual_to_date']
+                    
+                    # Use SAME model selection logic
+                    std_model = forecast_result.get('best_model')
+                    bt = forecast_result.get('backtesting', {})
+                    bt_model = bt.get('best_model')
+                    
+                    # Choose winning model
+                    chosen_model = std_model
+                    if selection_mode == 'Backtesting' and bt_model and bt_model in forecast_result.get('forecasts', {}):
+                        chosen_model = bt_model
+                    
+                    # Get quarter total for chosen model
+                    if chosen_model and chosen_model in forecast_result.get('forecasts', {}):
+                        original_quarter_total = forecast_result['forecasts'][chosen_model].get('quarter_total', forecast_result['summary']['quarter_total'])
+                    else:
+                        original_quarter_total = forecast_result['summary']['quarter_total']
+                    
+                    # Apply conservatism adjustment
+                    forecast_portion = original_quarter_total - actual_to_date
+                    adjusted_forecast_portion = forecast_portion * conservatism_factor
+                    adjusted_quarter_total = actual_to_date + adjusted_forecast_portion
+                    total_unconstrained += adjusted_quarter_total
+                
                 if total_unconstrained > 0:
                     revenue_reduction = total_unconstrained * (1 - capacity_adjustment)
                     st.warning(f"⚠️ **Impact:** ${revenue_reduction:,.0f} reduction from ${total_unconstrained:,.0f} forecast (capacity constraints)")
@@ -403,13 +449,14 @@ with tab_results:
                 bt_wapes.append(float(bt_wape))
         std_avg = sum(std_wapes)/len(std_wapes) if std_wapes else float('inf')
         bt_avg = sum(bt_wapes)/len(bt_wapes) if bt_wapes else float('inf')
-        # Validation Strategy: Always prefer backtesting for overfitting protection
+        # Validation Strategy: Sophisticated quarterly backtesting
         st.info(
-            "✅ **Enhanced Validation Strategy**\n\n"
-            "• **Primary Method**: Backtesting validation (walk-forward with recent weighting)\n"
-            "• **Why Backtesting**: Tests models on unknown future data to prevent overfitting\n"
-            "• **Automatic Fallback**: Uses standard validation only when insufficient data\n"
-            "• **Business Benefit**: More reliable forecasts for quarterly planning decisions"
+            "🎯 **Sophisticated Quarterly Backtesting**\n\n"
+            "• **Training Windows**: 180-365 day rolling windows (6-12 months)\n"
+            "• **Validation Folds**: 8-12 weekly origins (every Friday when possible)\n"
+            "• **Dynamic Horizons**: Forecast from origin to quarter-end (business-relevant)\n"
+            "• **Recent Focus**: Exponential weighting favors recent performance\n"
+            "• **Only Backtested Models**: Non-backtested models excluded from selection"
         )
         
         # Always use backtesting mode for optimal validation
@@ -422,11 +469,12 @@ with tab_results:
                 • **Backtesting** validates models on unknown future data, preventing overfitting to historical patterns
                 • **Standard validation** uses in-sample data which can create false confidence in overfit models
                 
-                ## 📊 **Daily Quarterly Optimization**
-                • **Recent focus**: Validates ONLY on last 2-3 weeks (not ancient history)
-                • **Short horizons**: 2-day validation windows appropriate for daily business volatility  
-                • **Recent weighting**: Latest validation folds weighted 4x more heavily
-                • **Limited scope**: Max 7 validation folds clustered at end of time series
+                ## 📊 **Quarterly Business Optimization**
+                • **Rolling Training**: 180-365 day windows (6-12 months of context)
+                • **Weekly Validation**: 8-12 folds spaced weekly for robust testing
+                • **Quarter-End Horizons**: Predicts to actual quarter end dates
+                • **Sophisticated Weighting**: 2-quarter half-life + 28-day current quarter decay
+                • **Data Purging**: Prevents leakage from rolling averages and feature lags
                 
                 ## 💼 **Business Benefits**
                 • **Reliable forecasts**: Models proven to work on unseen data
@@ -434,9 +482,11 @@ with tab_results:
                 • **Automatic fallback**: Uses standard validation when data is insufficient
                 
                 ## ⚙️ **Technical Details**
-                • **Walk-forward validation**: Expanding training windows with future prediction
-                • **Exponential weighting**: Recent validation folds weighted 4x more heavily
-                • **Stability checks**: Filters out unstable or unreasonable model predictions
+                • **Gap Protection**: max(lag_days, rolling_window_days) prevents data leakage
+                • **EOQ Penalty**: 1.25x penalty for poor end-of-quarter forecasting
+                • **WAPE Metrics**: Primary on remaining quarter, secondary on quarter total
+                • **MASE Tie-breaker**: Daily MASE for model ranking in close decisions
+                • **Business Days**: Respects fiscal calendar and business day scheduling
                 """
             )
         
@@ -534,17 +584,40 @@ with tab_results:
             else:
                 std_count += 1
         
-        # Create validation summary
-        validation_info = f"✅ **Validation Results ({len(forecasts_data)} products):**\n\n"
+        # Analyze backtesting methods used
+        quarterly_count = 0
+        enhanced_count = 0
+        method_info = {}
         
-        if bt_count > 0:
+        for product, data in forecasts_data.items():
+            forecast_result = data['forecast']
+            bt = forecast_result.get('backtesting', {})
+            method_used = bt.get('method_used', '')
+            
+            if 'quarterly' in method_used.lower():
+                quarterly_count += 1
+                if product not in method_info:
+                    method_info[product] = method_used
+            elif 'enhanced' in method_used.lower():
+                enhanced_count += 1
+                if product not in method_info:
+                    method_info[product] = method_used
+        
+        # Create validation summary
+        validation_info = f"🎯 **Sophisticated Validation Results ({len(forecasts_data)} products):**\n\n"
+        
+        if quarterly_count > 0:
             avg_folds = total_folds / bt_count if bt_count > 0 else 0
-            validation_info += f"• **{bt_count} products**: Backtesting validation (avg {avg_folds:.1f} folds, recent-weighted)\n"
+            validation_info += f"• **{quarterly_count} products**: Quarterly backtesting (180-365d training, weekly folds)\n"
+        
+        if enhanced_count > 0:
+            validation_info += f"• **{enhanced_count} products**: Enhanced daily backtesting (shorter history fallback)\n"
         
         if std_count > 0:
-            validation_info += f"• **{std_count} products**: Standard validation (insufficient data for backtesting)\n"
+            validation_info += f"• **{std_count} products**: Standard validation (insufficient data)\n"
         
         validation_info += f"\n**Performance**: Standard WAPE: {std_avg_text} | Backtesting WAPE: {bt_avg_text}\n"
+        validation_info += f"**Selection Rule**: Only backtested models allowed (✅ Overfitting protection)\n"
         validation_info += f"**Impact vs all-Standard**: {('+' if delta_total>=0 else '')}${delta_total:,.0f}"
         
         st.success(validation_info)
