@@ -217,13 +217,26 @@ def overlay_spikes_on_forecast(base_forecast, historical_data, spike_analysis, f
     if not spike_analysis['has_spikes']:
         return base_forecast
     
-    enhanced_forecast = base_forecast.copy()
+    # Normalize forecast to a NumPy array to ensure safe positional indexing
+    # Some models return pandas Series with non-zero/DateTime indices; using
+    # raw [i] indexing on a Series can raise KeyError. Converting to ndarray
+    # guarantees 0..N-1 positional access.
+    if isinstance(base_forecast, pd.Series):
+        enhanced_forecast = base_forecast.to_numpy(copy=True)
+    elif isinstance(base_forecast, (list, tuple, np.ndarray)):
+        enhanced_forecast = np.array(base_forecast, dtype=float).copy()
+    else:
+        try:
+            enhanced_forecast = np.array(base_forecast, dtype=float).copy()
+        except Exception:
+            # Fallback to a flat array at baseline if conversion fails
+            enhanced_forecast = np.full(int(forecast_days), float(spike_analysis.get('baseline_avg', 0.0)))
     last_date = historical_data.index.max()
     
     # Generate calendar dates for forecast period (all days, includes weekends)
     future_dates = pd.date_range(
         start=last_date + timedelta(days=1),
-        periods=min(len(enhanced_forecast), forecast_days),
+        periods=min(len(enhanced_forecast), int(forecast_days)),
         freq='D'
     )
     
