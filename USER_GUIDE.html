@@ -152,7 +152,7 @@
     <!-- Outlook Panel -->
     <section id="panel-outlook" class="panel" role="tabpanel" aria-labelledby="tab-outlook">
       <h2>What it does</h2>
-      <p>The Quarterly Outlook Forecaster (Daily Data Edition) projects quarter performance from partial in-quarter data using a fiscal calendar (e.g., July–June). Results surface by product with a top-level summary and model-rationale boxes.</p>
+      <p>The Quarterly Outlook Forecaster (Daily Data Edition) projects quarter performance from partial in-quarter data using sophisticated quarterly backtesting with business-oriented validation rules. Features intelligent model selection that only allows backtested models, ensuring production-ready forecasts with overfitting protection.</p>
 
       <div class="grid">
         <div class="card">
@@ -160,43 +160,103 @@
           <ol>
             <li>Open the app via <span class="mono">Quarter Outlook App/RUN_OUTLOOK_FORECASTER.bat</span>.</li>
             <li>Use the <strong>Data Upload</strong> tab to load your daily data (date, product ID/name, measure columns).</li>
-            <li>Switch to <strong>Outlook Results</strong>. Choose <em>Standard</em>, <em>Backtesting</em>, or <em>Auto (per product)</em>.</li>
-            <li>Review the top blue box for quarter-level MAPE comparison and impact; inspect per-product rationale boxes.</li>
-            <li>Download results for the active mode.</li>
+            <li>Review <strong>Outlook Results</strong> - app automatically uses Sophisticated Quarterly Backtesting (default).</li>
+            <li>Examine the enhanced validation strategy explanation and WAPE performance summary.</li>
+            <li>Analyze charts with purple dotted lines showing actual backtesting prediction trends.</li>
+            <li>Expand "Backtesting Validation Breakdown" for detailed fold-by-fold performance.</li>
+            <li>Download comprehensive results including monthly breakdowns and validation details.</li>
           </ol>
         </div>
         <div class="card">
-          <h3>Data notes</h3>
+          <h3>Data requirements</h3>
           <ul>
-            <li>Daily grain is preferred. The fiscal calendar mapping is applied inside the app.</li>
-            <li>Provide consistent product identifiers across the period.</li>
-            <li>Ensure current quarter has partial data; historical quarters improve model confidence.</li>
+            <li><strong>Optimal:</strong> ≥180 days for Sophisticated Quarterly Backtesting with 8-12 weekly validation folds.</li>
+            <li><strong>Minimum:</strong> ≥14 days for Enhanced Daily Backtesting (2-day horizon validation).</li>
+            <li><strong>Fallback:</strong> <14 days uses Standard mode (rare, basic statistical validation).</li>
+            <li>Daily grain with consistent product identifiers across the fiscal year period.</li>
+            <li>Current quarter partial data + historical data for robust model training.</li>
           </ul>
         </div>
       </div>
 
-      <h2>Selection modes (same behavior as Forecaster App)</h2>
-      <ul>
-        <li><strong>Standard:</strong> Multi-metric ranking on train sample.</li>
-        <li><strong>Backtesting:</strong> Walk-forward (and CV where available) to simulate true out-of-sample error.</li>
-        <li><strong>Auto (per product):</strong> Picks lower MAPE between Standard and Backtesting for each product and aggregates to hybrid totals.</li>
-      </ul>
-
-      <h2>Backtesting specifics for Outlook</h2>
-  <p>Walk-forward is aligned to the fiscal calendar so each product’s validation windows reflect realistic quarter progression. If history is insufficient, folds/horizon reduce automatically or the app falls back to Standard. You do not set months here—simply choose <em>Standard</em>, <em>Backtesting</em>, or <em>Auto (per product)</em>; Auto will decide per product.</p>
-
-      <h2>Reading the UI</h2>
-      <div class="kpis">
-        <div class="kpi"><strong>Tabs</strong><br><span class="muted">Data Upload → Outlook Results (as shown in the app’s header).</span></div>
-        <div class="kpi"><strong>Top blue box</strong><br><span class="muted">Shows Standard vs Backtesting MAPEs and Auto selection counts &amp; impact.</span></div>
-        <div class="kpi"><strong>Per-product rationale</strong><br><span class="muted">Explains why Standard or Backtesting was used for that product.</span></div>
+      <h2>Sophisticated Quarterly Backtesting (Default)</h2>
+      <div class="callout info">
+        <div><strong>🏆 Enhanced Validation Strategy:</strong> The app automatically uses advanced quarterly backtesting optimized for daily-to-quarterly forecasting with strict business rules for production-ready accuracy.</div>
+      </div>
+      
+      <div class="grid">
+        <div class="card">
+          <h3>Training & Validation</h3>
+          <ul>
+            <li><strong>Training Window:</strong> Rolling 180-365 days (min 180, default 365, never <90)</li>
+            <li><strong>Validation Folds:</strong> 8-12 weekly folds per quarter (preferably Fridays)</li>
+            <li><strong>Dynamic Horizon:</strong> Forecast from origin date through quarter-end</li>
+            <li><strong>Gap Protection:</strong> Prevents data leakage with intelligent lag handling</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Business-Aware Metrics</h3>
+          <ul>
+            <li><strong>Primary:</strong> WAPE on remaining-quarter sum (revenue-aligned)</li>
+            <li><strong>Secondary:</strong> WAPE on quarter total (full-quarter accuracy)</li>
+            <li><strong>Tertiary:</strong> Daily MASE (statistical robustness)</li>
+            <li><strong>EOQ Penalty:</strong> 1.25x penalty for poor end-of-quarter performance</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Recency Weighting</h3>
+          <ul>
+            <li><strong>Historical Folds:</strong> Exponential decay with 2-quarter half-life</li>
+            <li><strong>Current Quarter:</strong> Additional 28-day half-life weighting</li>
+            <li><strong>Focus:</strong> Recent validation folds weighted heavily for relevance</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Model Selection Rules</h3>
+          <ul>
+            <li><strong>Strict Policy:</strong> Only backtested models allowed (no fallback)</li>
+            <li><strong>Overfitting Protection:</strong> Models must pass validation to be selected</li>
+            <li><strong>Fallback:</strong> 'Run Rate' if all models fail backtesting</li>
+            <li><strong>Transparency:</strong> Detailed fold-by-fold breakdown available</li>
+          </ul>
+        </div>
       </div>
 
-      <h2>FAQ</h2>
+      <h2>Visual Chart Features</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>🔺 Green Triangles</h3>
+          <p>Validation start points showing where each backtesting fold begins its prediction period. These mark the exact dates when the model started forecasting during validation.</p>
+        </div>
+        <div class="card">
+          <h3>📈 Purple Dotted Lines</h3>
+          <p>Actual backtesting prediction trends from each validation fold. Shows how the model actually performed during walk-forward validation, not just summary statistics.</p>
+        </div>
+        <div class="card">
+          <h3>📊 Enhanced Titles</h3>
+          <p>Chart titles display both Standard and Backtesting WAPE with fold counts and "✓ Walk-Forward Validated" indicators for transparency.</p>
+        </div>
+        <div class="card">
+          <h3>📋 Interactive Details</h3>
+          <p>Expand "Backtesting Validation Breakdown" to see detailed metrics for each validation fold including iterations, weighted WAPE, and performance statistics.</p>
+        </div>
+      </div>
+
+      <h2>Reading the Enhanced UI</h2>
+      <div class="kpis">
+        <div class="kpi"><strong>Enhanced Strategy Box</strong><br><span class="muted">Blue info box explaining why backtesting is always used, with validation summary and method counts.</span></div>
+        <div class="kpi"><strong>Interactive Charts</strong><br><span class="muted">Green triangles = validation points, Purple dotted lines = backtesting predictions, Enhanced titles with WAPE metrics.</span></div>
+        <div class="kpi"><strong>Validation Breakdown</strong><br><span class="muted">Expandable section showing detailed fold-by-fold validation results with iterations and weighted metrics.</span></div>
+        <div class="kpi"><strong>Model Comparison</strong><br><span class="muted">Tables showing Standard WAPE, Backtesting WAPE, and Enhanced Score for transparency.</span></div>
+      </div>
+
+      <h2>FAQ & Troubleshooting</h2>
       <ul>
-        <li><strong>Why does Auto pick Standard for some products?</strong> Because its MAPE beat the Backtesting MAPE for those products.</li>
-        <li><strong>Why don’t I see backtesting for a product?</strong> Too little history may skip or simplify validation; Standard is used.</li>
-        <li><strong>Are totals the same across modes?</strong> Forecasts can differ; the top box reports impact vs all-Standard.</li>
+        <li><strong>Why do purple lines not show?</strong> Indicates validation fold issues; check the "Backtesting Validation Breakdown" section for detailed fold results and any error messages.</li>
+        <li><strong>Why does my product show "Enhanced Daily Backtesting"?</strong> When data is 14-179 days, app uses 2-day horizon validation instead of quarterly backtesting for optimal accuracy.</li>
+        <li><strong>What if I have high quarterly backtesting WAPE?</strong> Check EOQ penalty impact, review training window adequacy (180-365 days), and verify data quality in recent periods.</li>
+        <li><strong>Why do I see fewer than 8-12 validation folds?</strong> Limited recent history; optimal is weekly folds but app adapts to available data.</li>
+        <li><strong>Can I override the backtesting-first approach?</strong> No - this ensures production-ready forecasts with overfitting protection. If all models fail backtesting, app automatically falls back to 'Run Rate'.</li>
       </ul>
     </section>
 
@@ -215,16 +275,28 @@
         <p>Models ranked across WAPE, SMAPE, MASE, and RMSE for robustness. Best average rank across all metrics wins per product.</p>
       </div>
       <div class="card">
-        <h3>Walk-Forward Backtesting</h3>
-        <p>Expanding-window validation that trains on increasing historical data and predicts forward, mimicking real forecasting conditions with strict eligibility criteria.</p>
+        <h3>Sophisticated Quarterly Backtesting</h3>
+        <p>Advanced walk-forward validation with 180-365 day rolling training windows, 8-12 weekly validation folds, dynamic quarter-end horizons, and business-aware recency weighting.</p>
       </div>
       <div class="card">
-        <h3>Business-Aware Selection</h3>
-        <p>Deprioritizes polynomial models for revenue forecasting due to potential unrealistic growth curves in consumptive business scenarios.</p>
+        <h3>Enhanced Daily Backtesting</h3>
+        <p>Optimized validation for shorter history (14-179 days) using 2-day horizon with heavy weighting of recent performance for daily quarterly forecasting.</p>
       </div>
       <div class="card">
-        <h3>Composite Models</h3>
-        <p>Best per Product approaches that combine the optimal individual model for each product, often achieving better overall accuracy than any single model.</p>
+        <h3>EOQ (End-of-Quarter) Penalty</h3>
+        <p>1.25x penalty applied when forecasting error in the last 5 business days of a quarter exceeds 30% threshold, ensuring strong quarter-end performance.</p>
+      </div>
+      <div class="card">
+        <h3>Recency Weighting</h3>
+        <p>Multi-layered exponential decay: 2-quarter half-life for historical folds + 28-day half-life within current quarter, ensuring recent performance dominates model selection.</p>
+      </div>
+      <div class="card">
+        <h3>Validation Folds</h3>
+        <p>Individual train/test splits within walk-forward validation. Quarterly backtesting uses 8-12 weekly folds (preferably Fridays) starting near end of available history.</p>
+      </div>
+      <div class="card">
+        <h3>Overfitting Protection</h3>
+        <p>Strict policy allowing only backtested models to be selected, preventing models that perform well on training data but poorly on unseen data from being chosen.</p>
       </div>
     </div>
 

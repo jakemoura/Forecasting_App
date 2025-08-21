@@ -1703,36 +1703,15 @@ def smart_backtesting_select_model(
         method_used = f'enhanced-daily-walk-forward({horizon}h, gap={gap})'
         
     else:
-        # Simple method: basic fold validation (legacy)
-        n = len(full_series)
-        max_folds = 0
+        # Simple method: basic fold validation (legacy) - NOT CURRENTLY USED
+        # This method is kept for backward compatibility but should not be reached
+        # in normal operation since we prioritize quarterly and enhanced methods
+        per_model_wapes = {}
+        validation_details = {}
         for model in candidate_models:
-            errors = []
-            used_folds = 0
-            for f in range(folds, 0, -1):
-                test_end = n - (f - 1) * horizon
-                test_start = test_end - horizon
-                train_end = test_start - gap
-                if train_end <= 3 or test_start < 0 or test_end > n:
-                    continue
-                train_series = full_series.iloc[:train_end]
-                test_series = full_series.iloc[test_start:test_end]
-                if len(train_series) < 5 or len(test_series) < 1:
-                    continue
-                preds = _forecast_horizon_for_model(model, train_series, horizon=len(test_series))
-                wape_score = wape(test_series.values, preds)
-                if wape_score != float('inf'):
-                    errors.append(wape_score)
-                    used_folds += 1
-            if errors:
-                per_model_wapes[model] = float(np.mean(errors))
-                max_folds = max(max_folds, used_folds)
-                validation_details[model] = {'folds': used_folds, 'mean_wape': float(np.mean(errors))}
-            else:
-                per_model_wapes[model] = float('inf')
-                validation_details[model] = {'error': 'no_valid_folds'}
-        
-        method_used = f'simple-walk-forward({max_folds} folds, h={horizon}, gap={gap})'
+            per_model_wapes[model] = float('inf')
+            validation_details[model] = {'error': 'simple_method_deprecated'}
+        method_used = 'simple-deprecated'
 
     # Choose best by lowest WAPE - ONLY from models that passed backtesting
     if per_model_wapes:

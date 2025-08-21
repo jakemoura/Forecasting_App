@@ -22,9 +22,11 @@ Two professional-grade Streamlit applications for business revenue forecasting:
 
 ### Quarter Outlook Forecaster (Daily Data)
 - **🗓️ Fiscal Calendar Integration**: Configurable fiscal years (e.g., July-June quarters)
-- **📅 Daily Backtesting Validation**: Short-horizon validation with heavy weighting of recent performance
+- **🏆 Sophisticated Quarterly Backtesting**: Advanced walk-forward validation with business-oriented rules
+- **📈 Visual Backtesting Charts**: Purple dotted lines show actual backtesting prediction trends
 - **🔄 Renewal Pattern Detection**: Automatic spike detection and monthly renewal forecasting
 - **📊 Streamlined Models**: Core models optimized for daily quarterly forecasting (Run Rate, Linear Trend, Exponential Smoothing, Moving Average, Monthly Renewals)
+- **⚡ Intelligent Model Selection**: Only backtested models allowed (overfitting protection)
 
 ## Repo structure
 
@@ -86,23 +88,35 @@ Two professional-grade Streamlit applications for business revenue forecasting:
 
 ### Quarter Outlook Forecaster (Daily Data)
 
-**🚀 Backtesting Mode - Default & Recommended:**
-- **Process**: Daily backtesting validation optimized for quarterly forecasting
-- **Configuration**: 2-day horizon, 7-day windows, heavy weighting of recent performance
-- **Scoring**: WAPE-first with exponential weighting favoring recent validation folds
-- **Models**: Streamlined set (Run Rate, Linear Trend, Exponential Smoothing, Moving Average, Monthly Renewals)
+**🏆 Sophisticated Quarterly Backtesting - Default & Recommended:**
+- **Training Window**: Rolling 180-365 days (minimum 180, default 365, never <90 days)
+- **Validation Folds**: 8-12 weekly folds per quarter (preferably Fridays), starting near end of history
+- **Dynamic Horizon**: Forecast from origin date through quarter-end (not fixed horizons)
+- **Gap Protection**: `max(lag_days, rolling_window_days)` to prevent data leakage
+- **Recency Weighting**: Exponential decay with 2-quarter half-life + 28-day current quarter weighting
+- **Multi-Tier Metrics**: Primary WAPE on remaining-quarter sum, Secondary WAPE on quarter total, Tertiary daily MASE
+- **EOQ Penalty**: 1.25x penalty if last 5 business days error exceeds 30% threshold
+- **Strict Selection**: Only backtested models allowed (no fallback to non-validated models)
 
-**📊 Standard Mode - Fallback:**
-- **Process**: Multi-metric ranking using weighted validation approach
-- **Use case**: When insufficient daily data for meaningful backtesting
-- **Validation**: Uses recent performance with stability and reasonableness checks
+**📈 Enhanced Daily Backtesting - Fallback for Shorter History:**
+- **Process**: Optimized for 14-179 days of data with 2-day horizon validation
+- **Configuration**: 7-day windows, heavy weighting of recent performance  
+- **Scoring**: WAPE-first with exponential weighting favoring recent validation folds
+- **Models**: Same streamlined set with faster validation cycles
+
+**📊 Standard Mode - Final Fallback:**
+- **Process**: Multi-metric ranking when <14 days of data available
+- **Use case**: Insufficient data for meaningful backtesting (very rare)
+- **Validation**: Basic statistical validation with stability checks
 
 **🎯 Visual Integration:**
-- **Chart Indicators**: Green triangles show backtesting validation points
-- **Performance Display**: Both Standard and Backtesting WAPE shown in chart titles
-- **Model Comparison**: Interactive dropdown with real-time performance comparison
-- **Enhanced Legends**: Clear explanations of chart elements (historical, forecast, spikes, validation)
-- **Validation Context**: Number of backtesting folds displayed with validation markers
+- **🔺 Green Triangles**: Backtesting validation start points (where each fold begins prediction)
+- **📈 Purple Dotted Lines**: Actual backtesting prediction trends from each validation fold
+- **📊 Chart Titles**: Both Standard and Backtesting WAPE displayed with fold counts
+- **🎯 Interactive Dropdown**: Real-time model comparison with performance metrics
+- **📋 Enhanced Legends**: Clear explanations of all chart elements (historical, forecast, spikes, validation)
+- **✅ Validation Indicators**: "✓ Walk-Forward Validated" badge in chart titles
+- **📈 Backtesting Breakdown**: Detailed fold-by-fold validation results in expandable section
 
 ## WAPE Accuracy & Interpretation
 
@@ -176,11 +190,13 @@ git lfs track "*.xls" "*.xlsx" "*.xlsb" "*.zip"
 - **Polynomial warnings**: Business-aware selection is enabled by default for revenue forecasting
 
 ### Quarter Outlook Forecaster
-**📊 Daily Forecasting Issues:**
-- **Limited daily history**: App automatically falls back to Standard mode from Backtesting
-- **High backtesting WAPE**: Focus on recent performance weighting; consider data quality
-- **Spike detection**: Ensure sufficient historical data (≥30 days) for reliable pattern detection
-- **Model streamlining**: Uses core models optimized for daily quarterly forecasting
+**📊 Daily Quarterly Forecasting Issues:**
+- **Sophisticated backtesting not running**: Requires ≥180 days of data; falls back to Enhanced (≥14 days) or Standard (<14 days)
+- **High quarterly backtesting WAPE**: Check EOQ penalty impact, review training window (180-365 days), verify data quality in recent periods
+- **Limited validation folds**: Optimal is 8-12 weekly folds; fewer folds may indicate insufficient recent history
+- **Purple lines not showing**: Indicates validation fold issues; check backtesting breakdown section for detailed fold results
+- **Spike detection**: Ensure sufficient historical data (≥30 days) for reliable monthly renewal pattern detection
+- **Model selection**: Only backtested models allowed; if all models fail backtesting, app falls back to 'Run Rate'
 
 ### General (Both Apps)
 **🔧 Technical Issues:**
@@ -189,8 +205,12 @@ git lfs track "*.xls" "*.xlsx" "*.xlsb" "*.zip"
 - **Package conflicts**: Use provided requirements files and clean Python environment
 
 **💡 Best Practices:**
-- **Default approach**: Use Backtesting mode for highest accuracy (both apps)
-- **Chart analysis**: Green triangles in Quarter Outlook show backtesting validation points
-- **Performance comparison**: Standard vs. Backtesting WAPE displayed in chart titles
-- **Model comparison**: Use dropdown to compare approaches; WAPE displayed for transparency
-- **Visual validation**: Leverage enhanced charts to understand model performance
+- **Default approach**: Sophisticated Quarterly Backtesting provides optimal accuracy with overfitting protection
+- **Chart interpretation**: 
+  - 🔺 **Green triangles** = validation start points (where backtesting predictions begin)
+  - 📈 **Purple dotted lines** = actual prediction trends from each validation fold
+  - 📊 **Chart titles** = show both Standard and Backtesting WAPE with fold counts
+- **Performance validation**: Quarterly backtesting uses business-aware metrics (remaining-quarter WAPE, EOQ penalties)
+- **Model reliability**: Only validated models allowed - ensures production-ready forecasts
+- **Visual validation**: Enhanced charts reveal model behavior during actual backtesting periods
+- **Backtesting breakdown**: Expand detailed section to see fold-by-fold validation performance
