@@ -28,7 +28,7 @@ from modules.quarterly_forecasting import forecast_quarter_completion, apply_cap
 from modules.ui_components import (
     create_forecast_summary_table, create_forecast_visualization, create_progress_indicator,
     display_model_comparison, create_excel_download, display_spike_analysis,
-    display_capacity_adjustment_impact
+    display_capacity_adjustment_impact, display_backtesting_details
 )
 
 # Suppress warnings for cleaner output
@@ -388,40 +388,41 @@ with tab_results:
         
         # ============ TOP SECTION - MAIN RESULTS ============
         st.markdown("### 📊 Quarterly Outlook Results")
-        # Compute average MAPEs across products to auto-pick mode
-        std_mapes, bt_mapes = [], []
+        # Compute average WAPEs across products to auto-pick mode
+        std_wapes, bt_wapes = [], []
         for _, pdata in forecasts_data.items():
             f = pdata.get('forecast', {})
             std_best = f.get('best_model')
-            std_mape = f.get('mape_scores', {}).get(std_best, None)
-            if std_mape is not None and std_mape != float('inf'):
-                std_mapes.append(float(std_mape))
+            std_wape = f.get('wape_scores', {}).get(std_best, None)
+            if std_wape is not None and std_wape != float('inf'):
+                std_wapes.append(float(std_wape))
             bt = f.get('backtesting', {})
             bt_best = bt.get('best_model')
-            bt_mape = bt.get('per_model_mape', {}).get(bt_best, None) if bt_best else None
-            if bt_mape is not None and bt_mape != float('inf'):
-                bt_mapes.append(float(bt_mape))
-        std_avg = sum(std_mapes)/len(std_mapes) if std_mapes else float('inf')
-        bt_avg = sum(bt_mapes)/len(bt_mapes) if bt_mapes else float('inf')
-        # Selection mode: Standard (weighted) vs Backtesting (walk-forward) vs Auto (per product)
+            bt_wape = bt.get('per_model_wape', {}).get(bt_best, None) if bt_best else None
+            if bt_wape is not None and bt_wape != float('inf'):
+                bt_wapes.append(float(bt_wape))
+        std_avg = sum(std_wapes)/len(std_wapes) if std_wapes else float('inf')
+        bt_avg = sum(bt_wapes)/len(bt_wapes) if bt_wapes else float('inf')
+        # Selection mode: Standard (weighted) vs Backtesting (walk-forward)
         selection_mode = st.radio(
             "Selection mode",
-            options=["Standard", "Backtesting", "Auto (per product)"],
-            index=2,
+            options=["Standard", "Backtesting"],
+            index=1,  # Default to Backtesting (recommended for daily data)
             horizontal=True,
             help=(
-                "Standard: uses weighted scoring from the basic validation. "
-                "Backtesting: uses walk‑forward checks of recent periods (more robust). "
-                "Auto: per product, picks whichever has lower validation error."
+                "Standard: uses weighted scoring from basic validation. "
+                "Backtesting: uses walk‑forward validation of recent periods (recommended for daily quarterly forecasting)."
             )
         )
 
         with st.expander("What does Backtesting mean?", expanded=False):
             st.markdown(
                 """
-                • Backtesting replays past months, forecasting forward and comparing to what actually happened.\
-                • It provides an average error and consistency, which can be more realistic than a single split.\
-                • Auto (per product) compares Standard vs Backtesting and uses the lower‑error method for each product.
+                • **Backtesting** replays past periods using walk-forward validation, forecasting ahead and comparing to actual results.
+                • It provides **WAPE (Weighted Absolute Percentage Error)** - a dollar-weighted metric better suited for revenue forecasting.
+                • **Walk-forward validation** uses expanding windows with multiple folds for robust model evaluation.
+                • Users can switch between Standard and Backtesting approaches as needed.
+                • More robust than single train/test splits as it tests consistency across multiple time periods.
                 """
             )
         
@@ -434,54 +435,35 @@ with tab_results:
         capacity_factor = st.session_state.get('capacity_adjustment', 1.0) if st.session_state.get('apply_capacity_adjustment', False) else 1.0
         
         # Calculate totals using chosen strategy (per product)
-        auto_selected_bt_count = 0
-        auto_eval_count = 0
-        sum_chosen_mape = 0.0
-        sum_std_mape = 0.0
         standard_total_forecast = 0.0
 
         for product, data in forecasts_data.items():
             forecast_result = data['forecast']
             actual_to_date = forecast_result['actual_to_date']
 
-            # Standard model and MAPE
+            # Standard model and WAPE
             std_model = forecast_result.get('best_model')
-            std_mape = None
-            if std_model and 'mape_scores' in forecast_result:
+            std_wape = None
+            if std_model and 'wape_scores' in forecast_result:
                 try:
-                    std_mape = float(forecast_result['mape_scores'].get(std_model, float('inf')))
+                    std_wape = float(forecast_result['wape_scores'].get(std_model, float('inf')))
                 except Exception:
-                    std_mape = float('inf')
+                    std_wape = float('inf')
 
-            # Backtesting model and MAPE
+            # Backtesting model and WAPE
             bt = forecast_result.get('backtesting', {})
             bt_model = bt.get('best_model')
-            bt_mape = None
+            bt_wape = None
             if bt_model:
                 try:
-                    bt_mape = float(bt.get('per_model_mape', {}).get(bt_model, float('inf')))
+                    bt_wape = float(bt.get('per_model_wape', {}).get(bt_model, float('inf')))
                 except Exception:
-                    bt_mape = float('inf')
+                    bt_wape = float('inf')
 
             # Decide chosen model
             chosen_model = std_model
             if selection_mode == 'Backtesting' and bt_model and bt_model in forecast_result.get('forecasts', {}):
                 chosen_model = bt_model
-            elif selection_mode == 'Auto (per product)':
-                # Prefer backtesting if finite and lower MAPE
-                if (bt_model and bt_model in forecast_result.get('forecasts', {}) and
-                    bt_mape is not None and bt_mape != float('inf') and
-                    (std_mape is None or std_mape == float('inf') or bt_mape < std_mape)):
-                    chosen_model = bt_model
-                    auto_selected_bt_count += 1
-                # Track averages for rationale
-                if std_mape is not None and std_mape != float('inf'):
-                    sum_std_mape += std_mape
-                    auto_eval_count += 1
-                if chosen_model == bt_model and bt_mape is not None and bt_mape != float('inf'):
-                    sum_chosen_mape += bt_mape
-                elif chosen_model == std_model and std_mape is not None and std_mape != float('inf'):
-                    sum_chosen_mape += std_mape
 
             # Quarter total for chosen
             if chosen_model and chosen_model in forecast_result.get('forecasts', {}):
@@ -512,32 +494,16 @@ with tab_results:
         
         total_remaining = total_forecast - total_actual
 
-        # Top blue box: summary + show both Standard and Backtesting average MAPE
+        # Top blue box: summary + show both Standard and Backtesting average WAPE
         delta_total = total_forecast - standard_total_forecast
-        std_avg_text = f"{std_avg:.1f}%" if std_avg != float('inf') else "n/a"
-        bt_avg_text = f"{bt_avg:.1f}%" if bt_avg != float('inf') else "n/a"
+        std_avg_text = f"{std_avg:.1%}" if std_avg != float('inf') else "n/a"
+        bt_avg_text = f"{bt_avg:.1%}" if bt_avg != float('inf') else "n/a"
 
-        if selection_mode == 'Auto (per product)':
-            if auto_eval_count > 0:
-                avg_std = (sum_std_mape / auto_eval_count)
-                avg_chosen = (sum_chosen_mape / auto_eval_count) if sum_chosen_mape > 0 else avg_std
-                auto_summary = (
-                    f"Auto (per product) chose Backtesting for {auto_selected_bt_count}/{len(forecasts_data)} products. "
-                    f"Avg validation error: {avg_chosen:.1f}% vs Standard {avg_std:.1f}%. "
-                    f"Impact vs all‑Standard: {('+' if delta_total>=0 else '')}${delta_total:,.0f}."
-                )
-            else:
-                auto_summary = (
-                    f"Auto (per product) evaluated 0 products with finite MAPEs. "
-                    f"Impact vs all‑Standard: {('+' if delta_total>=0 else '')}${delta_total:,.0f}."
-                )
-            st.info(f"{auto_summary}\n\nStandard MAPE (avg): {std_avg_text} | Backtesting MAPE (avg): {bt_avg_text}")
-        else:
-            mode_summary = "Using Standard for totals." if selection_mode == 'Standard' else "Using Backtesting for totals."
-            st.info(
-                f"{mode_summary} Impact vs all‑Standard: {('+' if delta_total>=0 else '')}${delta_total:,.0f}.\n\n"
-                f"Standard MAPE (avg): {std_avg_text} | Backtesting MAPE (avg): {bt_avg_text}"
-            )
+        mode_summary = "Using Standard for totals." if selection_mode == 'Standard' else "Using Backtesting for totals."
+        st.info(
+            f"{mode_summary} Impact vs all‑Standard: {('+' if delta_total>=0 else '')}${delta_total:,.0f}.\n\n"
+            f"Standard WAPE (avg): {std_avg_text} | Backtesting WAPE (avg): {bt_avg_text}"
+        )
         
         # Main metrics at the top
         col1, col2, col3, col4 = st.columns(4)
@@ -587,58 +553,65 @@ with tab_results:
             # Decide best model for chart based on selection
             best_model = forecast_result.get('best_model', None)
             bt_model = forecast_result.get('backtesting', {}).get('best_model')
-            std_mape = forecast_result.get('mape_scores', {}).get(best_model, float('inf'))
-            bt_mape = None
+            std_wape = forecast_result.get('wape_scores', {}).get(best_model, float('inf'))
+            bt_wape = None
             if bt_model:
-                bt_mape = forecast_result.get('backtesting', {}).get('per_model_mape', {}).get(bt_model, float('inf'))
+                bt_wape = forecast_result.get('backtesting', {}).get('per_model_wape', {}).get(bt_model, float('inf'))
             if selection_mode == 'Backtesting' and bt_model and bt_model in forecast_result.get('forecasts', {}):
                 best_model = bt_model
-            elif selection_mode == 'Auto (per product)':
-                if bt_model and bt_model in forecast_result.get('forecasts', {}) and bt_mape != float('inf') and bt_mape < std_mape:
-                    best_model = bt_model
 
             # Create chart
             if 'forecasts' in forecast_result:
                 from modules.ui_components import create_forecast_visualization
-                chart, selected_model = create_forecast_visualization(product_series, forecast_result['forecasts'], forecast_result['quarter_info'], best_model=best_model)
+                chart, selected_model = create_forecast_visualization(
+                    product_series, 
+                    forecast_result['forecasts'], 
+                    forecast_result['quarter_info'], 
+                    best_model=best_model,
+                    backtesting_results=forecast_result.get('backtesting', {}),
+                    wape_scores=forecast_result.get('wape_scores', {})
+                )
                 if chart:
                     st.altair_chart(chart, use_container_width=True)
+                    
+                    # Add chart legend for backtesting indicators
+                    if forecast_result.get('backtesting', {}).get('validation_details', {}).get(selected_model, {}).get('iterations', 0) > 0:
+                        st.caption("📊 **Chart Legend:** Blue line = Historical data | Orange dashed = Forecast | 🔴 Red circles = Detected spikes | 🔺 Green triangles = Backtesting validation points")
             # Rationale for selection
             if 'model_evaluation' in forecast_result:
                 standard_model = forecast_result.get('best_model')
-                mape_scores = forecast_result.get('mape_scores', {})
-                std_mape = mape_scores.get(standard_model, float('inf'))
+                wape_scores = forecast_result.get('wape_scores', {})
+                std_wape = wape_scores.get(standard_model, float('inf'))
                 bt = forecast_result.get('backtesting', {})
                 bt_model = bt.get('best_model')
-                bt_mape = None
+                bt_wape = None
                 if bt_model:
-                    bt_mape = bt.get('per_model_mape', {}).get(bt_model, None)
+                    bt_wape = bt.get('per_model_wape', {}).get(bt_model, None)
                 # Determine mode used for rationale display
                 chosen_model = standard_model
                 mode_used = 'Standard'
                 if selection_mode == 'Backtesting' and bt_model:
                     chosen_model = bt_model
                     mode_used = 'Backtesting'
-                elif selection_mode == 'Auto (per product)':
-                    if bt_model and bt_mape is not None and bt_mape != float('inf') and (std_mape == float('inf') or bt_mape < std_mape):
-                        chosen_model = bt_model
-                        mode_used = 'Auto → Backtesting'
-                    else:
-                        mode_used = 'Auto → Standard'
                 chosen_total = forecast_result['forecasts'].get(chosen_model, {}).get('quarter_total', forecast_result['summary']['quarter_total'])
                 alt_total = forecast_result['forecasts'].get(standard_model if chosen_model != standard_model else (bt_model or standard_model), {}).get('quarter_total', chosen_total)
                 delta_total = chosen_total - alt_total
                 # Compose rationale text in blue info box
                 rationale = f"Using {mode_used}: {chosen_model}. "
                 details = []
-                if std_mape != float('inf'):
-                    details.append(f"Standard MAPE: {std_mape:.1f}%")
-                if bt_mape is not None and bt_mape != float('inf'):
-                    details.append(f"Backtesting MAPE: {bt_mape:.1f}%")
+                if std_wape != float('inf'):
+                    details.append(f"Standard WAPE: {std_wape:.1%}")
+                if bt_wape is not None and bt_wape != float('inf'):
+                    details.append(f"Backtesting WAPE: {bt_wape:.1%}")
                 if details:
                     rationale += " | ".join(details)
                 impact = f"Impact vs alternate: {('+' if delta_total>=0 else '')}${delta_total:,.0f} on quarter total"
                 st.info(f"{rationale}\n\n{impact}")
+            
+            # Add backtesting breakdown dropdown
+            if forecast_result.get('backtesting', {}).get('validation_details'):
+                with st.expander("🔄 Backtesting Validation Breakdown", expanded=False):
+                    display_backtesting_details(forecast_result['backtesting'])
         else:
             # Multiple products - show selection
             selected_product = st.selectbox(
@@ -662,57 +635,64 @@ with tab_results:
                 # Decide best model for chart based on selection
                 best_model = forecast_result.get('best_model', None)
                 bt_model = forecast_result.get('backtesting', {}).get('best_model')
-                std_mape = forecast_result.get('mape_scores', {}).get(best_model, float('inf'))
-                bt_mape = None
+                std_wape = forecast_result.get('wape_scores', {}).get(best_model, float('inf'))
+                bt_wape = None
                 if bt_model:
-                    bt_mape = forecast_result.get('backtesting', {}).get('per_model_mape', {}).get(bt_model, float('inf'))
+                    bt_wape = forecast_result.get('backtesting', {}).get('per_model_wape', {}).get(bt_model, float('inf'))
                 if selection_mode == 'Backtesting' and bt_model and bt_model in forecast_result.get('forecasts', {}):
                     best_model = bt_model
-                elif selection_mode == 'Auto (per product)':
-                    if bt_model and bt_model in forecast_result.get('forecasts', {}) and bt_mape != float('inf') and bt_mape < std_mape:
-                        best_model = bt_model
                 
                 # Create chart
                 if 'forecasts' in forecast_result:
                     from modules.ui_components import create_forecast_visualization
-                    chart, selected_model = create_forecast_visualization(product_series, forecast_result['forecasts'], forecast_result['quarter_info'], best_model=best_model)
+                    chart, selected_model = create_forecast_visualization(
+                        product_series, 
+                        forecast_result['forecasts'], 
+                        forecast_result['quarter_info'], 
+                        best_model=best_model,
+                        backtesting_results=forecast_result.get('backtesting', {}),
+                        wape_scores=forecast_result.get('wape_scores', {})
+                    )
                     if chart:
                         st.altair_chart(chart, use_container_width=True)
+                        
+                        # Add chart legend for backtesting indicators
+                        if forecast_result.get('backtesting', {}).get('validation_details', {}).get(selected_model, {}).get('iterations', 0) > 0:
+                            st.caption("📊 **Chart Legend:** Blue line = Historical data | Orange dashed = Forecast | 🔴 Red circles = Detected spikes | 🔺 Green triangles = Backtesting validation points")
                 # Rationale for selection
                 if 'model_evaluation' in forecast_result:
                     standard_model = forecast_result.get('best_model')
-                    mape_scores = forecast_result.get('mape_scores', {})
-                    std_mape = mape_scores.get(standard_model, float('inf'))
+                    wape_scores = forecast_result.get('wape_scores', {})
+                    std_wape = wape_scores.get(standard_model, float('inf'))
                     bt = forecast_result.get('backtesting', {})
                     bt_model = bt.get('best_model')
-                    bt_mape = None
+                    bt_wape = None
                     if bt_model:
-                        bt_mape = bt.get('per_model_mape', {}).get(bt_model, None)
+                        bt_wape = bt.get('per_model_wape', {}).get(bt_model, None)
                     chosen_model = standard_model
                     mode_used = 'Standard'
                     if selection_mode == 'Backtesting' and bt_model:
                         chosen_model = bt_model
                         mode_used = 'Backtesting'
-                    elif selection_mode == 'Auto (per product)':
-                        if bt_model and bt_mape is not None and bt_mape != float('inf') and (std_mape == float('inf') or bt_mape < std_mape):
-                            chosen_model = bt_model
-                            mode_used = 'Auto → Backtesting'
-                        else:
-                            mode_used = 'Auto → Standard'
                     chosen_total = forecast_result['forecasts'].get(chosen_model, {}).get('quarter_total', forecast_result['summary']['quarter_total'])
                     alt_total = forecast_result['forecasts'].get(standard_model if chosen_model != standard_model else (bt_model or standard_model), {}).get('quarter_total', chosen_total)
                     delta_total = chosen_total - alt_total
                     # Compose rationale text in blue info box
                     rationale = f"Using {mode_used}: {chosen_model}. "
                     details = []
-                    if std_mape != float('inf'):
-                        details.append(f"Standard MAPE: {std_mape:.1f}%")
-                    if bt_mape is not None and bt_mape != float('inf'):
-                        details.append(f"Backtesting MAPE: {bt_mape:.1f}%")
+                    if std_wape != float('inf'):
+                        details.append(f"Standard WAPE: {std_wape:.1%}")
+                    if bt_wape is not None and bt_wape != float('inf'):
+                        details.append(f"Backtesting WAPE: {bt_wape:.1%}")
                     if details:
                         rationale += " | ".join(details)
                     impact = f"Impact vs alternate: {('+' if delta_total>=0 else '')}${delta_total:,.0f} on quarter total"
                     st.info(f"{rationale}\n\n{impact}")
+                
+                # Add backtesting breakdown dropdown
+                if forecast_result.get('backtesting', {}).get('validation_details'):
+                    with st.expander("🔄 Backtesting Validation Breakdown", expanded=False):
+                        display_backtesting_details(forecast_result['backtesting'])
         
         # ============ DOWNLOAD SECTION ============
         st.markdown("### 📥 Export Results")
@@ -803,16 +783,27 @@ with tab_results:
                 
                 # Forecast summary table
                 if 'forecasts' in forecast_result:
-                    st.subheader("📈 Forecast Models Summary")
+                    st.subheader("📈 Enhanced Forecast Models Summary")
                     summary_table = create_forecast_summary_table(
                         forecast_result['forecasts'], 
-                        forecast_result.get('model_evaluation', {})
+                        forecast_result.get('model_evaluation', {}),
+                        forecast_result.get('wape_scores', {}),
+                        forecast_result.get('backtesting', {})
                     )
                     st.dataframe(summary_table, use_container_width=True)
                     
-                    # Model comparison
+                    # Enhanced model comparison with WAPE and backtesting
                     if 'model_evaluation' in forecast_result:
-                        display_model_comparison(forecast_result['forecasts'], forecast_result['model_evaluation'])
+                        display_model_comparison(
+                            forecast_result['forecasts'], 
+                            forecast_result['model_evaluation'],
+                            forecast_result.get('wape_scores', {}),
+                            forecast_result.get('backtesting', {})
+                        )
+                    
+                    # Display backtesting details if available
+                    if forecast_result.get('backtesting', {}).get('validation_details'):
+                        display_backtesting_details(forecast_result['backtesting'])
                 
                 # Spike analysis if available
                 renewal_forecast = forecast_result.get('forecasts', {}).get('Monthly Renewals')

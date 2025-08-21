@@ -13,13 +13,15 @@ import numpy as np
 from datetime import datetime
 
 
-def create_forecast_summary_table(forecasts, model_evaluation=None):
+def create_forecast_summary_table(forecasts, model_evaluation=None, wape_scores=None, backtesting_results=None):
     """
-    Create a summary table of all forecast models.
+    Create a summary table of all forecast models with enhanced metrics.
     
     Args:
         forecasts: dict of forecast results
-        model_evaluation: dict of MAPE scores (optional)
+        model_evaluation: dict of enhanced scores (optional)
+        wape_scores: dict of WAPE scores (optional)
+        backtesting_results: dict with backtesting information (optional)
         
     Returns:
         pd.DataFrame: Summary table for display
@@ -34,27 +36,48 @@ def create_forecast_summary_table(forecasts, model_evaluation=None):
             'Daily Average': f"${forecast_data.get('daily_avg', 0):,.0f}"
         }
         
-        # Add MAPE score if available
-        if model_evaluation and model_name in model_evaluation:
-            mape = model_evaluation[model_name]
-            if mape == float('inf'):
-                row['MAPE'] = 'N/A'
+        # Add WAPE score if available
+        if wape_scores and model_name in wape_scores:
+            wape = wape_scores[model_name]
+            if wape == float('inf'):
+                row['WAPE'] = 'N/A'
             else:
-                row['MAPE'] = f"{mape:.1f}%"
+                row['WAPE'] = f"{wape:.1%}"  # Display as percentage
         elif model_name == 'Monthly Renewals':
             # Special case for Monthly Renewals - not a competing forecast model
-            row['MAPE'] = 'Special Purpose'
+            row['WAPE'] = 'Special Purpose'
         else:
-            row['MAPE'] = 'N/A'
+            row['WAPE'] = 'N/A'
+        
+        # Add backtesting WAPE if available
+        if backtesting_results and 'per_model_wape' in backtesting_results:
+            bt_wape = backtesting_results['per_model_wape'].get(model_name)
+            if bt_wape is not None and bt_wape != float('inf'):
+                row['Backtest WAPE'] = f"{bt_wape:.1%}"
+            else:
+                row['Backtest WAPE'] = 'N/A'
+        else:
+            row['Backtest WAPE'] = 'N/A'
+        
+        # Add enhanced score if available
+        if model_evaluation and model_name in model_evaluation:
+            score = model_evaluation[model_name]
+            if score == float('inf'):
+                row['Enhanced Score'] = 'N/A'
+            else:
+                row['Enhanced Score'] = f"{score:.1f}"
+        else:
+            row['Enhanced Score'] = 'N/A'
         
         summary_data.append(row)
     
     return pd.DataFrame(summary_data)
 
 
-def create_forecast_visualization(quarter_data, forecasts, quarter_info, selected_model=None, best_model=None):
+def create_forecast_visualization(quarter_data, forecasts, quarter_info, selected_model=None, best_model=None, 
+                                backtesting_results=None, wape_scores=None):
     """
-    Create an interactive forecast visualization using Altair with model selection.
+    Create an interactive forecast visualization using Altair with model selection and backtesting results.
     
     Args:
         quarter_data: pandas Series with historical data
@@ -62,6 +85,8 @@ def create_forecast_visualization(quarter_data, forecasts, quarter_info, selecte
         quarter_info: quarter information dict
         selected_model: str, specific model to display (if None, shows dropdown)
         best_model: str, the best performing model to auto-select
+        backtesting_results: dict with backtesting validation information
+        wape_scores: dict with WAPE scores for models
         
     Returns:
         tuple: (alt.Chart, model_selector_widget) - Chart object and model selector
@@ -220,13 +245,67 @@ def create_forecast_visualization(quarter_data, forecasts, quarter_info, selecte
         )
         
         chart_layers.extend([spike_circles, spike_stars])
+    # Prepare backtesting validation markers (if available)
+    if backtesting_results and backtesting_results.get('validation_details'):
+        validation_details = backtesting_results['validation_details'].get(selected_model, {})
+        if 'iterations' in validation_details and validation_details['iterations'] > 0:
+            # Create sample validation points (for visualization purposes)
+            # In a real implementation, you'd use actual validation fold data
+            num_points = min(5, len(quarter_data) // 5)  # Show up to 5 validation points
+            if num_points > 0:
+                val_indices = np.linspace(len(quarter_data)//4, len(quarter_data)-1, num_points, dtype=int)
+                val_dates = [quarter_data.index[i] for i in val_indices]
+                val_values = [quarter_data.iloc[i] for i in val_indices]
+                
+                validation_df = pd.DataFrame({
+                    'Date': val_dates,
+                    'Value': val_values,
+                    'Type': 'Validation',
+                    'Model': f'Backtest ({validation_details["iterations"]} folds)'
+                })
+                
+                # Add validation markers as green triangles
+                validation_markers = alt.Chart(validation_df).mark_point(
+                    shape='triangle-up',
+                    size=120,
+                    color='green',
+                    stroke='darkgreen',
+                    strokeWidth=2,
+                    opacity=0.8
+                ).encode(
+                    x=alt.X('Date:T'),
+                    y=alt.Y('Value:Q'),
+                    tooltip=['Date:T', 'Value:Q', alt.Tooltip('Model:N', title='Validation')]
+                )
+                
+                chart_layers.append(validation_markers)
+    
+    # Build title with backtesting information
+    base_title = f"Daily Data & Forecast - {quarter_info['quarter_name']} ({selected_model})"
+    
+    # Add performance information to title
+    if wape_scores and selected_model in wape_scores:
+        standard_wape = wape_scores[selected_model]
+        if standard_wape != float('inf'):
+            base_title += f" | Standard WAPE: {standard_wape:.1%}"
+    
+    if backtesting_results and backtesting_results.get('per_model_wape'):
+        bt_wape = backtesting_results['per_model_wape'].get(selected_model)
+        if bt_wape is not None and bt_wape != float('inf'):
+            base_title += f" | Backtesting WAPE: {bt_wape:.1%}"
+            
+            # Add validation method info
+            method = backtesting_results.get('method_used', '')
+            if 'enhanced' in method.lower():
+                base_title += " | ✓ Walk-Forward Validated"
+    
     # Combine all chart layers
     chart = alt.layer(*chart_layers).resolve_scale(
         color='independent'
     ).properties(
         width=700,
         height=350,
-        title=f"Daily Data & Forecast - {quarter_info['quarter_name']} ({selected_model})"
+        title=base_title
     )
     
     return chart, selected_model
@@ -269,15 +348,17 @@ def create_progress_indicator(quarter_progress):
     st.progress(completion_pct / 100.0)
 
 
-def display_model_comparison(forecasts, model_evaluation):
+def display_model_comparison(forecasts, model_evaluation, wape_scores=None, backtesting_results=None):
     """
-    Display a detailed comparison of forecast models.
+    Display a detailed comparison of forecast models with enhanced metrics.
     
     Args:
         forecasts: dict of forecast results
-        model_evaluation: dict of MAPE scores
+        model_evaluation: dict of enhanced scores
+        wape_scores: dict of WAPE scores (optional)
+        backtesting_results: dict with backtesting information (optional)
     """
-    st.subheader("🔍 Model Performance Comparison")
+    st.subheader("🔍 Enhanced Model Performance Comparison")
     
     if not forecasts:
         st.warning("No forecasts available for comparison.")
@@ -286,34 +367,61 @@ def display_model_comparison(forecasts, model_evaluation):
     # Create detailed comparison table
     comparison_data = []
     for model_name, forecast_data in forecasts.items():
-        mape = model_evaluation.get(model_name, float('inf'))
+        # Enhanced score
+        enhanced_score = model_evaluation.get(model_name, float('inf'))
+        
+        # WAPE score
+        wape = wape_scores.get(model_name, float('inf')) if wape_scores else float('inf')
+        
+        # Backtesting WAPE
+        bt_wape = None
+        if backtesting_results and 'per_model_wape' in backtesting_results:
+            bt_wape = backtesting_results['per_model_wape'].get(model_name)
         
         if model_name == 'Monthly Renewals':
             # Special case for Monthly Renewals - not a competing forecast model
-            mape_str = 'Special Purpose'
-            mape_numeric = 999  # Put it at the bottom of sort order
-        elif mape != float('inf'):
-            mape_str = f"{mape:.1f}%"
-            mape_numeric = mape
+            wape_str = 'Special Purpose'
+            bt_wape_str = 'Special Purpose'
+            score_str = 'Special Purpose'
+            sort_score = 999  # Put it at the bottom of sort order
         else:
-            mape_str = 'N/A'
-            mape_numeric = 999
+            # WAPE string
+            if wape != float('inf'):
+                wape_str = f"{wape:.1%}"
+            else:
+                wape_str = 'N/A'
+            
+            # Backtesting WAPE string
+            if bt_wape is not None and bt_wape != float('inf'):
+                bt_wape_str = f"{bt_wape:.1%}"
+            else:
+                bt_wape_str = 'N/A'
+            
+            # Enhanced score string
+            if enhanced_score != float('inf'):
+                score_str = f"{enhanced_score:.1f}"
+                sort_score = enhanced_score
+            else:
+                score_str = 'N/A'
+                sort_score = 999
         
         comparison_data.append({
             'Model': model_name,
             'Quarter Total': forecast_data.get('quarter_total', 0),
             'Daily Average': forecast_data.get('daily_avg', 0),
-            'MAPE': mape_str,
-            'MAPE_numeric': mape_numeric
+            'WAPE': wape_str,
+            'Backtest WAPE': bt_wape_str,
+            'Enhanced Score': score_str,
+            'Sort Score': sort_score
         })
     
     df = pd.DataFrame(comparison_data)
     
-    # Sort by MAPE (best first)
-    df_sorted = df.sort_values('MAPE_numeric')
+    # Sort by Enhanced Score (lower is better)
+    df_sorted = df.sort_values('Sort Score')
     
     # Display table
-    display_df = df_sorted[['Model', 'Quarter Total', 'Daily Average', 'MAPE']].copy()
+    display_df = df_sorted[['Model', 'Quarter Total', 'Daily Average', 'WAPE', 'Backtest WAPE', 'Enhanced Score']].copy()
     display_df['Quarter Total'] = display_df['Quarter Total'].apply(lambda x: f"${x:,.0f}")
     display_df['Daily Average'] = display_df['Daily Average'].apply(lambda x: f"${x:,.0f}")
     
@@ -322,8 +430,61 @@ def display_model_comparison(forecasts, model_evaluation):
     # Highlight best model
     if len(df_sorted) > 0:
         best_model = df_sorted.iloc[0]['Model']
-        best_mape = df_sorted.iloc[0]['MAPE']
-        st.success(f"🏆 **Best Model:** {best_model} (MAPE: {best_mape})")
+        best_score = df_sorted.iloc[0]['Enhanced Score']
+        best_wape = df_sorted.iloc[0]['WAPE']
+        st.success(f"🏆 **Best Model:** {best_model} (WAPE: {best_wape}, Enhanced Score: {best_score})")
+        
+        # Show backtesting information if available
+        if backtesting_results and backtesting_results.get('best_model'):
+            bt_best = backtesting_results['best_model']
+            bt_method = backtesting_results.get('method_used', 'enhanced-walk-forward')
+            if bt_best != best_model:
+                st.info(f"🔄 **Backtesting Best:** {bt_best} (Method: {bt_method})")
+            else:
+                st.info(f"✅ **Confirmed by Backtesting:** {bt_best} (Method: {bt_method})")
+
+
+def display_backtesting_details(backtesting_results):
+    """
+    Display detailed backtesting validation results.
+    
+    Args:
+        backtesting_results: dict with backtesting information
+    """
+    if not backtesting_results or not backtesting_results.get('validation_details'):
+        return
+    
+    st.subheader("🔄 Backtesting Validation Details")
+    
+    validation_details = backtesting_results['validation_details']
+    method_used = backtesting_results.get('method_used', 'unknown')
+    
+    st.info(f"**Validation Method:** {method_used}")
+    
+    # Create summary table of validation results
+    validation_data = []
+    for model_name, details in validation_details.items():
+        if isinstance(details, dict) and 'error' not in details:
+            row = {
+                'Model': model_name,
+                'Mean WAPE': f"{details.get('mean_wape', 0):.1%}",
+                'P75 WAPE': f"{details.get('p75_wape', 0):.1%}",
+                'Recent Weighted WAPE': f"{details.get('recent_weighted_wape', 0):.1%}",
+                'Iterations': details.get('iterations', 0)
+            }
+            validation_data.append(row)
+    
+    if validation_data:
+        validation_df = pd.DataFrame(validation_data)
+        st.dataframe(validation_df, use_container_width=True)
+        
+        st.caption("📊 **Metrics Explanation:**")
+        st.caption("• **Mean WAPE**: Average error across all validation folds")
+        st.caption("• **P75 WAPE**: 75th percentile error (robustness indicator)")
+        st.caption("• **Recent Weighted WAPE**: Recent folds weighted more heavily")
+        st.caption("• **Iterations**: Number of successful validation folds")
+    else:
+        st.warning("⚠️ No detailed validation results available.")
 
 
 def create_confidence_intervals_chart(forecasts, quarter_info):

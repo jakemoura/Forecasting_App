@@ -15,6 +15,12 @@ from .model_evaluation import (
     evaluate_individual_forecasts,
     select_best_model_weighted,
     smart_backtesting_select_model,
+    walk_forward_validation,
+    simple_backtesting_validation,
+    daily_backtesting_validation,
+    calculate_validation_metrics,
+    wape,
+    calculate_mape,
 )
 
 
@@ -100,30 +106,31 @@ def forecast_quarter_completion(series, current_date=None, detect_spikes=True, s
         }
     
     # 3. Prophet Model (if available) - Use full historical data for training
-    prophet_result = fit_prophet_daily_model(series)  # Use full series instead of just quarter_data
-    if prophet_result['model_type'] == 'prophet' and 'model' in prophet_result:
-        try:
-            # Create future dates for forecast
-            future_dates = pd.date_range(
-                start=data_end_date + timedelta(days=1),
-                periods=days_remaining,
-                freq='D'
-            )
-            future_df = pd.DataFrame({'ds': future_dates})
-            
-            # Generate forecast
-            prophet_forecast = prophet_result['model'].predict(future_df)
-            prophet_values = prophet_forecast['yhat'].values
-            prophet_values = np.maximum(prophet_values, 0)  # Ensure non-negative
-            
-            forecasts['Prophet'] = {
-                'forecast': prophet_values,
-                'daily_avg': np.mean(prophet_values),
-                'remaining_total': np.sum(prophet_values),
-                'quarter_total': quarter_data.sum() + np.sum(prophet_values)
-            }
-        except Exception:
-            pass
+    # COMMENTED OUT: Too complex for daily quarterly forecasting with limited data
+    # prophet_result = fit_prophet_daily_model(series)  # Use full series instead of just quarter_data
+    # if prophet_result['model_type'] == 'prophet' and 'model' in prophet_result:
+    #     try:
+    #         # Create future dates for forecast
+    #         future_dates = pd.date_range(
+    #             start=data_end_date + timedelta(days=1),
+    #             periods=days_remaining,
+    #             freq='D'
+    #         )
+    #         future_df = pd.DataFrame({'ds': future_dates})
+    #         
+    #         # Generate forecast
+    #         prophet_forecast = prophet_result['model'].predict(future_df)
+    #         prophet_values = prophet_forecast['yhat'].values
+    #         prophet_values = np.maximum(prophet_values, 0)  # Ensure non-negative
+    #         
+    #         forecasts['Prophet'] = {
+    #             'forecast': prophet_values,
+    #             'daily_avg': np.mean(prophet_values),
+    #             'remaining_total': np.sum(prophet_values),
+    #             'quarter_total': quarter_data.sum() + np.sum(prophet_values)
+    #         }
+    #     except Exception:
+    #         pass
     
     # 4. Run Rate Model (simple daily average)
     daily_avg = quarter_data.mean()
@@ -138,19 +145,20 @@ def forecast_quarter_completion(series, current_date=None, detect_spikes=True, s
     # 5. Time Series Models (ARIMA, Exponential Smoothing) - Use full historical data
     if len(series) >= 14:  # Use full series length instead of quarter_data
         # ARIMA
-        arima_result = fit_arima_model(series)  # Use full series instead of quarter_data
-        if arima_result['model_type'] == 'arima' and 'model' in arima_result:
-            try:
-                arima_forecast = arima_result['model'].forecast(steps=days_remaining)
-                arima_values = np.maximum(arima_forecast, 0)  # Ensure non-negative
-                forecasts['ARIMA'] = {
-                    'forecast': arima_values,
-                    'daily_avg': np.mean(arima_values),
-                    'remaining_total': np.sum(arima_values),
-                    'quarter_total': quarter_data.sum() + np.sum(arima_values)
-                }
-            except Exception:
-                pass
+        # COMMENTED OUT: Can be unstable with limited quarterly data (~90 days)
+        # arima_result = fit_arima_model(series)  # Use full series instead of quarter_data
+        # if arima_result['model_type'] == 'arima' and 'model' in arima_result:
+        #     try:
+        #         arima_forecast = arima_result['model'].forecast(steps=days_remaining)
+        #         arima_values = np.maximum(arima_forecast, 0)  # Ensure non-negative
+        #         forecasts['ARIMA'] = {
+        #             'forecast': arima_values,
+        #             'daily_avg': np.mean(arima_values),
+        #             'remaining_total': np.sum(arima_values),
+        #             'quarter_total': quarter_data.sum() + np.sum(arima_values)
+        #         }
+        #     except Exception:
+        #         pass
         
         # Exponential Smoothing
         exp_result = fit_exponential_smoothing_model(series)  # Use full series instead of quarter_data
@@ -170,42 +178,45 @@ def forecast_quarter_completion(series, current_date=None, detect_spikes=True, s
     # 6. Machine Learning Models (if sufficient data) - Use full historical data
     if len(series) >= 21:  # Use full series length instead of quarter_data
         # XGBoost
-        xgb_model, xgb_features = fit_xgboost_model(series)  # Use full series instead of quarter_data
-        if xgb_model is not None:
-            try:
-                # For now, use a reasonable prediction based on recent trends
-                recent_avg = series.iloc[-min(14, len(series)):].mean()  # Last 14 days or available
-                xgb_forecast = np.full(days_remaining, recent_avg)  # Use recent average as prediction
-                
-                forecasts['XGBoost'] = {
-                    'forecast': xgb_forecast,
-                    'daily_avg': np.mean(xgb_forecast),
-                    'remaining_total': np.sum(xgb_forecast),
-                    'quarter_total': quarter_data.sum() + np.sum(xgb_forecast)
-                }
-            except Exception:
-                pass
+        # COMMENTED OUT: May overfit with limited quarterly data (~90 days)
+        # xgb_model, xgb_features = fit_xgboost_model(series)  # Use full series instead of quarter_data
+        # if xgb_model is not None:
+        #     try:
+        #         # For now, use a reasonable prediction based on recent trends
+        #         recent_avg = series.iloc[-min(14, len(series)):].mean()  # Last 14 days or available
+        #         xgb_forecast = np.full(days_remaining, recent_avg)  # Use recent average as prediction
+        #         
+        #         forecasts['XGBoost'] = {
+        #             'forecast': xgb_forecast,
+        #             'daily_avg': np.mean(xgb_forecast),
+        #             'remaining_total': np.sum(xgb_forecast),
+        #             'quarter_total': quarter_data.sum() + np.sum(xgb_forecast)
+        #         }
+        #     except Exception:
+        #         pass
         
         # LightGBM
-        lgbm_result = fit_lightgbm_daily_model(series)  # Use full series instead of quarter_data
-        if lgbm_result['model_type'] == 'lightgbm' and 'model' in lgbm_result:
-            try:
-                # Use the actual forecast value from LightGBM if available
-                if 'forecast_value' in lgbm_result:
-                    lgbm_forecast = np.full(days_remaining, lgbm_result['forecast_value'])
-                else:
-                    # Fallback to recent average
-                    recent_avg = series.iloc[-min(14, len(series)):].mean()
-                    lgbm_forecast = np.full(days_remaining, recent_avg)
-                
-                forecasts['LightGBM'] = {
-                    'forecast': lgbm_forecast,
-                    'daily_avg': np.mean(lgbm_forecast),
-                    'remaining_total': np.sum(lgbm_forecast),
-                    'quarter_total': quarter_data.sum() + np.sum(lgbm_forecast)
-                }
-            except Exception:
-                pass
+        # COMMENTED OUT: Machine learning may overfit with limited quarterly data
+        # lgbm_result = fit_lightgbm_daily_model(series)  # Use full series instead of quarter_data
+        # if lgbm_result['model_type'] == 'lightgbm' and 'model' in lgbm_result:
+        #     try:
+        #         # Use the actual forecast value from LightGBM if available
+        #         if 'forecast_value' in lgbm_result:
+        #             lgbm_forecast = np.full(days_remaining, lgbm_result['forecast_value'])
+        #         else:
+        #             # Fallback to recent average
+        #             recent_avg = series.iloc[-min(14, len(series)):].mean()
+        #             lgbm_forecast = np.full(days_remaining, recent_avg)
+        #         
+        #         forecasts['LightGBM'] = {
+        #             'forecast': lgbm_forecast,
+        #             'daily_avg': np.mean(lgbm_forecast),
+        #             'remaining_total': np.sum(lgbm_forecast),
+        #             'quarter_total': quarter_data.sum() + np.sum(lgbm_forecast)
+        #         }
+        #     except Exception:
+        #         pass
+        pass  # All machine learning models are commented out for daily quarterly forecasting
     
     # 7. Spike Detection and Analysis - Use full historical data for better pattern detection
     spike_analysis = None
@@ -296,20 +307,46 @@ def forecast_quarter_completion(series, current_date=None, detect_spikes=True, s
     else:
         print(f"[DEBUG] No spike analysis available for overlay")
     
-    # Evaluate models and select best performers
-    model_scores = evaluate_individual_forecasts(series, forecasts)  # Use full series for evaluation
+    # ============================================================================
+    # Enhanced Model Evaluation with WAPE and Backtesting
+    # ============================================================================
     
-    # Add forecast reasonableness checks and weighted scoring
-    weighted_scores = {}
+    # Evaluate models using WAPE (Weighted Absolute Percentage Error)
+    wape_scores = evaluate_individual_forecasts(series, forecasts)  # Use full series for evaluation
+    
+    # Perform daily backtesting validation optimized for quarterly forecasting
+    backtesting_results = {}
+    if len(series) >= 14:  # Need at least 2 weeks of data for meaningful daily backtesting
+        backtesting_results = smart_backtesting_select_model(
+            full_series=series,
+            forecasts=forecasts,
+            method='enhanced',  # Use enhanced daily backtesting validation
+            horizon=2,  # 2-day forecast horizon (appropriate for daily data)
+            gap=0,      # No gap needed for daily data
+            folds=5     # More folds but shorter horizon
+        )
+    
+    # Combine standard WAPE scores with backtesting results for enhanced selection
+    enhanced_model_scores = {}
     historical_avg = series.mean()
-    quarter_avg = quarter_data.mean()
     
-    for model_name, mape_score in model_scores.items():
+    for model_name, wape_score in wape_scores.items():
         if model_name in forecasts:
             forecast_data = forecasts[model_name]
             
-            # Calculate weighted score considering MAPE, forecast reasonableness, and stability
-            base_score = mape_score if mape_score != float('inf') else 100.0
+            # Start with WAPE score (scaled to percentage for easier interpretation)
+            base_score = wape_score * 100 if wape_score != float('inf') else 100.0
+            
+            # Backtesting adjustment: if model performed well in backtesting, give bonus
+            backtesting_bonus = 0
+            if model_name in backtesting_results.get('per_model_wape', {}):
+                bt_wape = backtesting_results['per_model_wape'][model_name]
+                if bt_wape != float('inf') and bt_wape < wape_score:
+                    # Model performed better in backtesting, give bonus
+                    backtesting_bonus = -2.0
+                elif bt_wape != float('inf') and bt_wape > wape_score * 1.5:
+                    # Model performed much worse in backtesting, apply penalty
+                    backtesting_bonus = 5.0
             
             # Reasonableness penalty: forecast shouldn't be more than 3x historical average
             reasonableness_penalty = 0
@@ -329,54 +366,52 @@ def forecast_quarter_completion(series, current_date=None, detect_spikes=True, s
                     if cv < 0.3:  # Low variability is good
                         stability_bonus = -2.0
             
-            # Calculate final weighted score (lower is better)
-            weighted_score = base_score + reasonableness_penalty + stability_bonus
-            weighted_scores[model_name] = weighted_score
+            # Calculate final enhanced score (lower is better)
+            enhanced_score = base_score + backtesting_bonus + reasonableness_penalty + stability_bonus
+            enhanced_model_scores[model_name] = enhanced_score
             
-            print(f"[DEBUG] {model_name}: MAPE={mape_score:.1f}%, Reasonableness={reasonableness_penalty:.1f}, Final Score={weighted_score:.1f}")
+            # Debug output
+            bt_wape_str = f"{backtesting_results['per_model_wape'].get(model_name, float('inf')):.3f}" if model_name in backtesting_results.get('per_model_wape', {}) else "N/A"
+            print(f"[DEBUG] {model_name}: WAPE={wape_score:.3f}, BT_WAPE={bt_wape_str}, Final Score={enhanced_score:.1f}")
     
-    # Use weighted scores for model selection (Standard selection)
-    final_model_scores = weighted_scores if weighted_scores else model_scores
+    # Use enhanced scores for model selection (combining WAPE + Backtesting)
+    final_model_scores = enhanced_model_scores if enhanced_model_scores else wape_scores
     
     # Create ensemble forecast from top performing models
-    top_models = sorted(final_model_scores.items(), key=lambda x: x[1])[:3]  # Top 3 by score
-    ensemble_forecast = fit_ensemble_model(quarter_data, {
-        name: forecasts[name] for name, score in top_models if name in forecasts
-    })
+    # COMMENTED OUT: Ensemble adds complexity without clear benefit for daily quarterly forecasting
+    # top_models = sorted(final_model_scores.items(), key=lambda x: x[1])[:3]  # Top 3 by score
+    # ensemble_forecast = fit_ensemble_model(quarter_data, {
+    #     name: forecasts[name] for name, score in top_models if name in forecasts
+    # })
+    # 
+    # if ensemble_forecast['model_type'] != 'fallback_mean':
+    #     ensemble_values = np.full(days_remaining, ensemble_forecast['forecast'])
+    #     forecasts['Ensemble'] = {
+    #         'forecast': ensemble_values,
+    #         'daily_avg': ensemble_forecast['forecast'],
+    #         'remaining_total': np.sum(ensemble_values),
+    #         'quarter_total': quarter_data.sum() + np.sum(ensemble_values)
+    #     }
+    #     
+    #     # Apply spike overlay to ensemble if we have any spike analysis
+    #     if active_spike_analysis and active_spike_analysis['has_spikes']:
+    #         enhanced_ensemble = overlay_spikes_on_forecast(
+    #             ensemble_values, quarter_data, active_spike_analysis, days_remaining, spike_intensity
+    #         )
+    #         forecasts['Ensemble']['forecast'] = enhanced_ensemble
+    #         forecasts['Ensemble']['daily_avg'] = np.mean(enhanced_ensemble)
+    #         forecasts['Ensemble']['remaining_total'] = np.sum(enhanced_ensemble)
+    #         forecasts['Ensemble']['quarter_total'] = quarter_data.sum() + np.sum(enhanced_ensemble)
+    #         forecasts['Ensemble']['spike_analysis'] = active_spike_analysis
     
-    if ensemble_forecast['model_type'] != 'fallback_mean':
-        ensemble_values = np.full(days_remaining, ensemble_forecast['forecast'])
-        forecasts['Ensemble'] = {
-            'forecast': ensemble_values,
-            'daily_avg': ensemble_forecast['forecast'],
-            'remaining_total': np.sum(ensemble_values),
-            'quarter_total': quarter_data.sum() + np.sum(ensemble_values)
-        }
-        
-        # Apply spike overlay to ensemble if we have any spike analysis
-        if active_spike_analysis and active_spike_analysis['has_spikes']:
-            enhanced_ensemble = overlay_spikes_on_forecast(
-                ensemble_values, quarter_data, active_spike_analysis, days_remaining, spike_intensity
-            )
-            forecasts['Ensemble']['forecast'] = enhanced_ensemble
-            forecasts['Ensemble']['daily_avg'] = np.mean(enhanced_ensemble)
-            forecasts['Ensemble']['remaining_total'] = np.sum(enhanced_ensemble)
-            forecasts['Ensemble']['quarter_total'] = quarter_data.sum() + np.sum(enhanced_ensemble)
-            forecasts['Ensemble']['spike_analysis'] = active_spike_analysis
-    
-    # Calculate summary statistics
-    # Smart backtesting-driven selection (parallel path)
-    bt_result = smart_backtesting_select_model(series, forecasts, method='auto', horizon=min(7, days_remaining), gap=7, folds=3)
-    backtesting_best_model_name = bt_result.get('best_model', None)
-    backtesting_mapes = bt_result.get('per_model_mape', {})
-
+    # Calculate summary statistics and finalize model selection
     if forecasts:
         quarter_totals = [f['quarter_total'] for f in forecasts.values()]
         median_forecast = np.median(quarter_totals)
         confidence_low = np.percentile(quarter_totals, 10)
         confidence_high = np.percentile(quarter_totals, 90)
         
-        # Select best model (Standard) - use weighted scoring instead of just MAPE
+        # Select best model using enhanced scoring (Standard approach with WAPE + Backtesting)
         if final_model_scores:
             best_model_name = min(final_model_scores.items(), key=lambda x: x[1])[0]
         else:
@@ -410,8 +445,9 @@ def forecast_quarter_completion(series, current_date=None, detect_spikes=True, s
         },
         'actual_to_date': quarter_data.sum(),
         'forecasts': forecasts,
-    'model_evaluation': final_model_scores,
-    'mape_scores': model_scores,
+        'model_evaluation': final_model_scores,
+        'wape_scores': wape_scores,  # New: WAPE scores for all models
+        'mape_scores': wape_scores,  # Legacy compatibility (now WAPE)
         'best_model': best_model_name,
         'summary': {
             'quarter_total': best_forecast['quarter_total'],
@@ -422,19 +458,22 @@ def forecast_quarter_completion(series, current_date=None, detect_spikes=True, s
         'quarter_complete': False
     }
 
-    # Attach backtesting selection results and an alternate best model if present
-    if backtesting_best_model_name and backtesting_best_model_name in forecasts:
+    # Attach enhanced backtesting results if available
+    if backtesting_results and backtesting_results.get('best_model'):
+        backtesting_best_model = backtesting_results['best_model']
         result['backtesting'] = {
-            'best_model': backtesting_best_model_name,
-            'per_model_mape': backtesting_mapes,
-            'method_used': bt_result.get('method_used'),
-            'quarter_total': forecasts[backtesting_best_model_name]['quarter_total']
+            'best_model': backtesting_best_model,
+            'per_model_wape': backtesting_results.get('per_model_wape', {}),
+            'method_used': backtesting_results.get('method_used', 'enhanced-walk-forward'),
+            'validation_details': backtesting_results.get('validation_details', {}),
+            'quarter_total': forecasts[backtesting_best_model]['quarter_total'] if backtesting_best_model in forecasts else None
         }
     else:
         result['backtesting'] = {
             'best_model': None,
-            'per_model_mape': backtesting_mapes,
-            'method_used': bt_result.get('method_used')
+            'per_model_wape': {},
+            'method_used': 'insufficient-data',
+            'validation_details': {}
         }
 
     return result
