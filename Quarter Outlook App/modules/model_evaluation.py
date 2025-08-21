@@ -259,26 +259,30 @@ def daily_backtesting_validation(series, model_fitting_func, window_size=7, step
             diagnostic_messages.append(f"⚠️ Daily backtesting: Need {min_required} days, have {len(series)}. Insufficient data.")
         return None
 
-    # For daily data, limit iterations to focus on recent performance
-    # Use expanding window but limit to recent 3-4 weeks of validation
-    max_iterations = min(10, max(0, (len(series) - min_train - max(0, gap) - horizon) // step_size + 1))
+    # For DAILY QUARTERLY forecasting: focus validation on RECENT periods only
+    # We only care about how models perform on the last 2-3 weeks, not ancient history
     
-    # For daily quarterly forecasting, be more lenient with training period
-    # We want to use most of the available data, especially for longer series
-    if len(series) >= 30:
-        # For longer series, start earlier to get more validation folds
-        recent_start = max(0, min(min_train + 5, len(series) // 3))
-    else:
-        # For shorter series, start closer to minimum training size
-        recent_start = max(0, min_train)
+    # Limit validation to the most recent 20-30 days of data
+    recent_validation_window = min(30, max(14, len(series) // 2))  # Last 2-4 weeks
     
-    # Setup validation parameters for daily data
+    # Start validation from near the end of the available data
+    validation_start_point = max(min_train, len(series) - recent_validation_window)
     
+    # Calculate how many validation folds we can fit in the recent window
+    available_validation_days = len(series) - validation_start_point - max(0, gap) - horizon
+    max_iterations = min(7, max(1, available_validation_days // step_size))  # Max 7 recent folds
+    
+    if max_iterations <= 0:
+        return None
+    
+    # Setup validation parameters for RECENT daily data only
     for i in range(max_iterations):
-        train_end_idx = min_train + i * step_size
-        # Ensure we're focusing on recent periods
-        if train_end_idx < recent_start:
-            continue
+        # Start validation from recent periods, not from the beginning
+        train_end_idx = validation_start_point + i * step_size
+        
+        # Ensure we don't go beyond available data
+        if train_end_idx >= len(series) - max(0, gap) - horizon:
+            break
             
         val_start_idx = train_end_idx + max(0, gap)
         val_end_idx = val_start_idx + horizon
@@ -1262,7 +1266,8 @@ def smart_backtesting_select_model(
                         'mean_wape': cv_results['mean_mape'],
                         'p75_wape': cv_results['p75_mape'],
                         'iterations': cv_results['iterations'],
-                        'recent_weighted_wape': cv_results['recent_weighted_mape']
+                        'recent_weighted_wape': cv_results['recent_weighted_mape'],
+                        'validation_periods': cv_results.get('validation_results', [])  # Include actual validation periods
                     }
                     # Model successfully validated
                     pass

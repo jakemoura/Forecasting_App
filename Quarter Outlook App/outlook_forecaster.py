@@ -403,26 +403,40 @@ with tab_results:
                 bt_wapes.append(float(bt_wape))
         std_avg = sum(std_wapes)/len(std_wapes) if std_wapes else float('inf')
         bt_avg = sum(bt_wapes)/len(bt_wapes) if bt_wapes else float('inf')
-        # Selection mode: Standard (weighted) vs Backtesting (walk-forward)
-        selection_mode = st.radio(
-            "Selection mode",
-            options=["Standard", "Backtesting"],
-            index=1,  # Default to Backtesting (recommended for daily data)
-            horizontal=True,
-            help=(
-                "Standard: uses weighted scoring from basic validation. "
-                "Backtesting: uses walk‑forward validation of recent periods (recommended for daily quarterly forecasting)."
-            )
+        # Validation Strategy: Always prefer backtesting for overfitting protection
+        st.info(
+            "✅ **Enhanced Validation Strategy**\n\n"
+            "• **Primary Method**: Backtesting validation (walk-forward with recent weighting)\n"
+            "• **Why Backtesting**: Tests models on unknown future data to prevent overfitting\n"
+            "• **Automatic Fallback**: Uses standard validation only when insufficient data\n"
+            "• **Business Benefit**: More reliable forecasts for quarterly planning decisions"
         )
+        
+        # Always use backtesting mode for optimal validation
+        selection_mode = "Backtesting"
 
-        with st.expander("What does Backtesting mean?", expanded=False):
+        with st.expander("Why Use Backtesting Validation?", expanded=False):
             st.markdown(
                 """
-                • **Backtesting** replays past periods using walk-forward validation, forecasting ahead and comparing to actual results.
-                • It provides **WAPE (Weighted Absolute Percentage Error)** - a dollar-weighted metric better suited for revenue forecasting.
-                • **Walk-forward validation** uses expanding windows with multiple folds for robust model evaluation.
-                • Users can switch between Standard and Backtesting approaches as needed.
-                • More robust than single train/test splits as it tests consistency across multiple time periods.
+                ## 🛡️ **Overfitting Protection**
+                • **Backtesting** validates models on unknown future data, preventing overfitting to historical patterns
+                • **Standard validation** uses in-sample data which can create false confidence in overfit models
+                
+                ## 📊 **Daily Quarterly Optimization**
+                • **Recent focus**: Validates ONLY on last 2-3 weeks (not ancient history)
+                • **Short horizons**: 2-day validation windows appropriate for daily business volatility  
+                • **Recent weighting**: Latest validation folds weighted 4x more heavily
+                • **Limited scope**: Max 7 validation folds clustered at end of time series
+                
+                ## 💼 **Business Benefits**
+                • **Reliable forecasts**: Models proven to work on unseen data
+                • **WAPE metric**: Dollar-weighted accuracy aligned with revenue impact
+                • **Automatic fallback**: Uses standard validation when data is insufficient
+                
+                ## ⚙️ **Technical Details**
+                • **Walk-forward validation**: Expanding training windows with future prediction
+                • **Exponential weighting**: Recent validation folds weighted 4x more heavily
+                • **Stability checks**: Filters out unstable or unreasonable model predictions
                 """
             )
         
@@ -499,11 +513,41 @@ with tab_results:
         std_avg_text = f"{std_avg:.1%}" if std_avg != float('inf') else "n/a"
         bt_avg_text = f"{bt_avg:.1%}" if bt_avg != float('inf') else "n/a"
 
-        mode_summary = "Using Standard for totals." if selection_mode == 'Standard' else "Using Backtesting for totals."
-        st.info(
-            f"{mode_summary} Impact vs all‑Standard: {('+' if delta_total>=0 else '')}${delta_total:,.0f}.\n\n"
-            f"Standard WAPE (avg): {std_avg_text} | Backtesting WAPE (avg): {bt_avg_text}"
-        )
+        # Count validation methods actually used
+        bt_count = 0
+        std_count = 0
+        total_folds = 0
+        
+        for product, data in forecasts_data.items():
+            forecast_result = data['forecast']
+            bt = forecast_result.get('backtesting', {})
+            bt_model = bt.get('best_model')
+            
+            if bt_model and bt_model in forecast_result.get('forecasts', {}):
+                bt_count += 1
+                # Count validation folds for this product
+                validation_details = bt.get('validation_details', {})
+                if bt_model in validation_details:
+                    model_details = validation_details[bt_model]
+                    if isinstance(model_details, dict) and 'iterations' in model_details:
+                        total_folds += model_details['iterations']
+            else:
+                std_count += 1
+        
+        # Create validation summary
+        validation_info = f"✅ **Validation Results ({len(forecasts_data)} products):**\n\n"
+        
+        if bt_count > 0:
+            avg_folds = total_folds / bt_count if bt_count > 0 else 0
+            validation_info += f"• **{bt_count} products**: Backtesting validation (avg {avg_folds:.1f} folds, recent-weighted)\n"
+        
+        if std_count > 0:
+            validation_info += f"• **{std_count} products**: Standard validation (insufficient data for backtesting)\n"
+        
+        validation_info += f"\n**Performance**: Standard WAPE: {std_avg_text} | Backtesting WAPE: {bt_avg_text}\n"
+        validation_info += f"**Impact vs all-Standard**: {('+' if delta_total>=0 else '')}${delta_total:,.0f}"
+        
+        st.success(validation_info)
         
         # Main metrics at the top
         col1, col2, col3, col4 = st.columns(4)
@@ -575,8 +619,15 @@ with tab_results:
                     st.altair_chart(chart, use_container_width=True)
                     
                     # Add chart legend for backtesting indicators
-                    if forecast_result.get('backtesting', {}).get('validation_details', {}).get(selected_model, {}).get('iterations', 0) > 0:
-                        st.caption("📊 **Chart Legend:** Blue line = Historical data | Orange dashed = Forecast | 🔴 Red circles = Detected spikes | 🔺 Green triangles = Backtesting validation points")
+                    validation_details = forecast_result.get('backtesting', {}).get('validation_details', {}).get(selected_model, {})
+                    has_validation = validation_details.get('iterations', 0) > 0
+                    has_periods = len(validation_details.get('validation_periods', [])) > 0
+                    
+                    if has_validation:
+                        if has_periods:
+                            st.caption("📊 **Chart Legend:** Blue line = Historical data | Orange dashed = Forecast | 🔴 Red circles = Detected spikes | 🔺 Green triangles = Validation start points | Purple dotted = Backtesting predictions")
+                        else:
+                            st.caption("📊 **Chart Legend:** Blue line = Historical data | Orange dashed = Forecast | 🔴 Red circles = Detected spikes | 🔺 Green triangles = Validation points (recent periods)")
             # Rationale for selection
             if 'model_evaluation' in forecast_result:
                 standard_model = forecast_result.get('best_model')
@@ -657,8 +708,15 @@ with tab_results:
                         st.altair_chart(chart, use_container_width=True)
                         
                         # Add chart legend for backtesting indicators
-                        if forecast_result.get('backtesting', {}).get('validation_details', {}).get(selected_model, {}).get('iterations', 0) > 0:
-                            st.caption("📊 **Chart Legend:** Blue line = Historical data | Orange dashed = Forecast | 🔴 Red circles = Detected spikes | 🔺 Green triangles = Backtesting validation points")
+                        validation_details = forecast_result.get('backtesting', {}).get('validation_details', {}).get(selected_model, {})
+                        has_validation = validation_details.get('iterations', 0) > 0
+                        has_periods = len(validation_details.get('validation_periods', [])) > 0
+                        
+                        if has_validation:
+                            if has_periods:
+                                st.caption("📊 **Chart Legend:** Blue line = Historical data | Orange dashed = Forecast | 🔴 Red circles = Detected spikes | 🔺 Green triangles = Validation start points | Purple dotted = Backtesting predictions")
+                            else:
+                                st.caption("📊 **Chart Legend:** Blue line = Historical data | Orange dashed = Forecast | 🔴 Red circles = Detected spikes | 🔺 Green triangles = Validation points (recent periods)")
                 # Rationale for selection
                 if 'model_evaluation' in forecast_result:
                     standard_model = forecast_result.get('best_model')
