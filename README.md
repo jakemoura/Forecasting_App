@@ -21,7 +21,7 @@ Two professional-grade Streamlit applications for business revenue forecasting:
 - **📋 Comprehensive Reporting**: Product-level breakdowns with confidence intervals
 
 ### Quarter Outlook Forecaster (Daily Data)
-- **🗓️ Fiscal Calendar Integration**: Configurable fiscal years (e.g., July-June quarters)
+- **🗓️ Fiscal Calendar Integration**: July-June fiscal year calendar (Q1: Jul-Sep, Q2: Oct-Dec, Q3: Jan-Mar, Q4: Apr-Jun)
 - **🏆 Sophisticated Quarterly Backtesting**: Advanced walk-forward validation with business-oriented rules
 - **📈 Visual Backtesting Charts**: Purple dotted lines show actual backtesting prediction trends
 - **🔄 Renewal Pattern Detection**: Automatic spike detection and monthly renewal forecasting
@@ -57,7 +57,7 @@ Two professional-grade Streamlit applications for business revenue forecasting:
 
 **Quarterly Outlook Forecaster:**  
 - **Format**: Daily data with Date, Product, ACR columns
-- **Fiscal calendar**: Configurable (e.g., July-June quarters)
+- **Fiscal calendar**: July-June fiscal year (Q1: Jul-Sep, Q2: Oct-Dec, Q3: Jan-Mar, Q4: Apr-Jun)
 - **Coverage**: Current quarter partial data + historical quarters for model training
 
 ## Model Selection & Backtesting
@@ -81,8 +81,8 @@ Two professional-grade Streamlit applications for business revenue forecasting:
 - **Selection**: Choose when you prefer single-model interpretation
 
 **⚙️ Backtesting Configuration:**
-- **Gap**: 0 months (default) | 1-2 months if autocorrelation/lag concerns
-- **Horizon**: 6 months (mimics real forecasting) | configurable based on planning needs
+- **Gap**: 0 months (optimized automatically)
+- **Horizon**: 6 months (optimized for real forecasting scenarios)
 - **Step size**: 6 months (captures seasonal cycles)
 - **Fallback**: Automatic degradation to Standard selection when history insufficient
 

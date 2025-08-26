@@ -134,9 +134,9 @@ Forecaster App/
 - More data = better backtesting options
 
 ### **3. Configure Backtesting:**
-- Use the slider to set backtesting period
-- Follow UI recommendations for optimal settings
-- Advanced users can adjust gap and horizon
+- Use the slider to set backtesting period  
+- Parameters automatically optimized (6-month horizon, 0-month gap)
+- App handles validation configuration for best accuracy
 
 ### **4. Run Forecasts:**
 - Select models to run

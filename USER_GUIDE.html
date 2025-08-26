@@ -116,11 +116,11 @@
 
       <h3>Recommended settings</h3>
       <ul>
-        <li><strong>Most users:</strong> Validation horizon = <strong>12 months</strong>; Leakage gap = <strong>1 month</strong>.</li>
-        <li><strong>Short history:</strong> Horizon = <strong>6</strong> (or <strong>3</strong>) months; Gap = <strong>0</strong>.</li>
-        <li><strong>Heavy seasonality / long history:</strong> Horizon = <strong>12–18 months</strong>; Gap = <strong>1–2 months</strong>.</li>
+        <li><strong>Backtesting parameters:</strong> Automatically optimized - Gap = <strong>0 months</strong>; Horizon = <strong>6 months</strong>; Step = <strong>6 months</strong>.</li>
+        <li><strong>Requirements:</strong> ≥24 months history for eligibility; automatically falls back to Standard with shorter history.</li>
+        <li><strong>No manual configuration needed:</strong> Parameters optimized for revenue forecasting scenarios.</li>
       </ul>
-      <p class="small muted">Walk‑forward typically trains on ~24 months and needs roughly <strong>24 + gap + horizon</strong> months of history. With less history, the app automatically reduces iterations or falls back to Standard.</p>
+      <p class="small muted">Walk‑forward uses optimized parameters and needs roughly <strong>30+ months</strong> of history for best results. With less history, the app automatically falls back to Standard mode.</p>
 
       <h2>Models compared</h2>
       <div class="grid">
