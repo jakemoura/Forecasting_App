@@ -9,7 +9,7 @@ Mathematically grounded approach focusing on:
 
 Philosophy: Let the statistics drive the forecasts, apply minimal business logic only where mathematically justified.
 
-Author: Jake Moura (jakemoura@microsoft.com)
+Author: Jake Moura
 """
 
 import io

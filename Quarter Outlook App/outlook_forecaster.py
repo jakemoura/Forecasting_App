@@ -12,7 +12,7 @@ Key Features:
 
 Philosophy: Quick, actionable quarterly outlook for business decision-making.
 
-Author: Jake Moura (jakemoura@microsoft.com)
+Author: Jake Moura
 """
 
 import io

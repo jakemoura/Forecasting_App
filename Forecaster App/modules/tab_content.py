@@ -259,4 +259,4 @@ def render_model_guide_tab():
 
 def render_footer():
     """Render the application footer."""
-    st.markdown("**Created by: Jake Moura (jakemoura@microsoft.com)**")
+    st.markdown("**Created by: Jake Moura**")
