@@ -227,6 +227,7 @@ def walk_forward_validation(series, model_fitting_func, window_size=24, step_siz
     if model_params is None:
         model_params = {}
     
+    # Per-fold WAPE list (internally called mape historically)
     mape_scores = []  # WAPE per fold
     smape_scores = []
     rmse_scores = []
@@ -318,7 +319,16 @@ def walk_forward_validation(series, model_fitting_func, window_size=24, step_siz
         recent_p75 = float(np.percentile(recent_slice, 75)) if recent_slice.size else float(np.percentile(mape_arr, 75))
     except Exception:
         recent_p75 = float(np.percentile(mape_arr, 75)) if mape_arr.size else np.inf
+    # Standardized WAPE keys (new) while preserving legacy keys for compatibility
     results = {
+        # New standardized keys
+        'mean_wape': float(np.mean(mape_arr)),
+        'p75_wape': float(np.percentile(mape_arr, 75)),
+        'p95_wape': float(np.percentile(mape_arr, 95)),
+        'wapes_by_fold': mape_scores,
+        'folds': len(mape_scores),
+        'recent_weighted_wape': rw_mape,
+        # Legacy keys maintained to avoid breaking older readers
         'mean_mape': float(np.mean(mape_arr)),
         'std_mape': float(np.std(mape_arr)),
         'median_mape': float(np.median(mape_arr)),
@@ -736,6 +746,7 @@ def simple_backtesting_validation(series, model_fitting_func, backtest_months=12
             
             return {
                 'mape': mape,
+                'wape': wape(test_data.values, forecast),  # Add WAPE for consistency
                 'smape': smape_val,
                 'mase': mase_val,
                 'rmse': rmse_val,
@@ -745,6 +756,12 @@ def simple_backtesting_validation(series, model_fitting_func, backtest_months=12
                 'gap': backtest_gap,
                 'validation_horizon': validation_horizon,
                 'enhanced_analysis': enhanced,
+                'method': 'simple_backtesting',
+                'validation_type': 'simple',  # For UI display
+                'aggregation_method': 'single_fold_mape',  # For UI display
+                'validation_completed': True,  # For UI display
+                'num_folds': 1,  # For UI display
+                'training_window_range': f"{len(train_data)} months",  # For UI display
                 'success': True,
                 # Add data for chart overlay
                 'train_data': train_data,
@@ -763,14 +780,255 @@ def simple_backtesting_validation(series, model_fitting_func, backtest_months=12
         return None
 
 
+def enhanced_rolling_validation(series, model_fitting_func, min_train_size=12, max_train_size=18, 
+                              validation_horizon=3, backtest_months=15, recency_alpha=0.6,
+                              model_params=None, diagnostic_messages=None):
+    """
+    Enhanced rolling validation with 12-18 month training windows and quarterly validation.
+    
+    Key improvements:
+    1. Training windows of 12-18 months (not fixed 24)
+    2. Validation horizon = 3 months (quarterly)
+    3. Rolling folds until backtest_months is covered
+    4. Aggregate fold errors using WAPE, not MAPE
+    5. Recency-weighted WAPE with exponential decay (alpha=0.6)
+    
+    Args:
+        series: Pandas Series of monthly values
+        model_fitting_func: Callable(train_data, **params) -> fitted model with forecast()/predict()
+        min_train_size: minimum training window in months (default 12)
+        max_train_size: maximum training window in months (default 18) 
+        validation_horizon: validation period per fold in months (default 3)
+        backtest_months: total backtesting period in months (default 15)
+        recency_alpha: decay factor for older folds (default 0.6)
+        model_params: optional dict of params for fitting function
+        diagnostic_messages: list for status logs
+    
+    Returns:
+        dict with enhanced metrics including recency-weighted WAPE
+    """
+    if model_params is None:
+        model_params = {}
+    
+    fold_wapes = []
+    fold_smapes = []
+    fold_mases = []
+    validation_results = []
+    
+    # Initialize chart data variables (will store most recent fold data)
+    chart_train_data = None
+    chart_test_data = None
+    chart_predictions = None
+    
+    # Ensure we have enough data
+    min_required = max_train_size + backtest_months
+    if len(series) < min_required:
+        if diagnostic_messages:
+            diagnostic_messages.append(f"⚠️ Enhanced validation: Need {min_required} months, have {len(series)}.")
+        return None
+
+    # Calculate rolling fold positions working backwards from the end
+    series_end = len(series)
+    backtest_start = series_end - backtest_months
+    
+    # Generate folds covering the backtest period
+    fold_idx = 0
+    current_val_end = series_end
+    
+    while current_val_end > backtest_start + validation_horizon:
+        # Validation window for this fold
+        val_start_idx = current_val_end - validation_horizon
+        val_end_idx = current_val_end
+        
+        # Skip if validation window goes beyond backtest start
+        if val_start_idx < backtest_start:
+            break
+            
+        # Dynamic training window size - grow with more data available
+        available_train_data = val_start_idx
+        train_size = min(max_train_size, max(min_train_size, available_train_data))
+        train_start_idx = max(0, val_start_idx - train_size)
+        
+        # Skip if insufficient training data
+        if val_start_idx - train_start_idx < min_train_size:
+            break
+            
+        # Extract data for this fold
+        train_data = series.iloc[train_start_idx:val_start_idx]
+        actual_data = series.iloc[val_start_idx:val_end_idx]
+        
+        # Skip if insufficient data
+        if len(train_data) < min_train_size or len(actual_data) < validation_horizon:
+            current_val_end -= validation_horizon  # Move to next fold
+            continue
+
+        try:
+            # Fit model and generate forecast
+            fitted_model = model_fitting_func(train_data, **model_params)
+            if hasattr(fitted_model, 'forecast'):
+                forecast = fitted_model.forecast(len(actual_data))
+            elif hasattr(fitted_model, 'predict'):
+                forecast = fitted_model.predict(start=len(train_data), end=len(train_data) + len(actual_data) - 1)
+            else:
+                current_val_end -= validation_horizon
+                continue
+                
+            # Calculate WAPE (not MAPE) for each fold
+            wape_val = wape(actual_data, forecast)
+            smape_val = smape(actual_data, forecast)
+            mase_val = mase(actual_data, forecast, train_data, seasonal_period=12)
+            
+            fold_wapes.append(wape_val)
+            fold_smapes.append(smape_val)
+            fold_mases.append(mase_val)
+            
+            validation_results.append({
+                'fold': fold_idx + 1,
+                'train_start': series.index[train_start_idx],
+                'train_end': series.index[val_start_idx - 1], 
+                'val_start': series.index[val_start_idx],
+                'val_end': series.index[val_end_idx - 1],
+                'train_size': len(train_data),
+                'val_size': len(actual_data),
+                'wape': wape_val,
+                'smape': smape_val,
+                'mase': mase_val,
+                'is_most_recent': fold_idx == 0,
+                # Include per‑fold series for visualization of all folds
+                'val_dates': list(actual_data.index),
+                'y_true': list(np.asarray(actual_data, dtype=float)),
+                'y_pred': list(np.asarray(forecast, dtype=float))
+            })
+            
+            # Store chart data from most recent fold (fold_idx == 0) for chart overlay
+            if fold_idx == 0:
+                chart_train_data = train_data.copy()
+                chart_test_data = actual_data.copy()  # Use actual test data with proper index
+                chart_predictions = forecast
+            
+            fold_idx += 1
+
+        except Exception as e:
+            if diagnostic_messages:
+                diagnostic_messages.append(f"⚠️ Enhanced validation fold {fold_idx + 1} failed: {str(e)[:50]}")
+        
+        # Move to next fold (step back by validation_horizon)
+        current_val_end -= validation_horizon
+    
+    if not fold_wapes or len(fold_wapes) < 2:
+        if diagnostic_messages:
+            diagnostic_messages.append(f"⚠️ Enhanced validation: Only {len(fold_wapes)} successful folds, need at least 2.")
+        return None
+    
+    # Convert to numpy arrays for calculations
+    wape_arr = np.array(fold_wapes)
+    
+    # Calculate recency weights with exponential decay (newest folds get highest weight)
+    # weights = alpha ** np.arange(len(fold_wapes)-1, -1, -1)
+    weights = recency_alpha ** np.arange(len(fold_wapes) - 1, -1, -1)
+    weights_normalized = weights / np.sum(weights)
+    
+    # Calculate weighted WAPE (newest folds weighted more heavily)
+    recent_weighted_wape = float(np.dot(wape_arr, weights_normalized))
+    
+    # Calculate standard metrics
+    mean_wape = float(np.mean(wape_arr))
+    p75_wape = float(np.percentile(wape_arr, 75))
+    p95_wape = float(np.percentile(wape_arr, 95))
+    
+    # Calculate other standard metrics
+    mean_smape = float(np.mean(fold_smapes))
+    mean_mase = float(np.nanmean(fold_mases)) if fold_mases else np.nan
+    
+    # Trend analysis - are recent folds performing better?
+    trend_improving = False
+    trend_slope = 0.0
+    if len(wape_arr) >= 3:
+        # Simple linear trend: negative slope = improving (lower WAPE over time)
+        fold_indices = np.arange(len(wape_arr))
+        trend_slope = np.polyfit(fold_indices, wape_arr, 1)[0]
+        trend_improving = trend_slope < 0
+    
+    # Stability metrics
+    std_wape = float(np.std(wape_arr))
+    fold_consistency = 1.0 - (std_wape / mean_wape) if mean_wape > 0 else 0.0
+    
+    results = {
+        # Primary metrics (using WAPE instead of MAPE)
+        'mape': recent_weighted_wape,  # Primary metric for compatibility
+        'wape': recent_weighted_wape,  # Explicit WAPE
+        'mean_wape': mean_wape,
+        'p75_wape': p75_wape,
+        'p95_wape': p95_wape,
+        'recent_weighted_wape': recent_weighted_wape,
+        
+        # Other metrics
+        'smape': mean_smape,
+        'mase': mean_mase,
+        'mean_mase': mean_mase,
+        
+        # Stability and trend
+        'std_wape': std_wape,
+        'fold_consistency': float(fold_consistency),
+        'trend_slope': float(trend_slope),
+        'trend_improving': bool(trend_improving),
+        
+        # Metadata
+        'folds': len(fold_wapes),
+        'iterations': len(fold_wapes),  # Compatibility alias
+        'validation_horizon': validation_horizon,
+        'min_train_size': min_train_size,
+        'max_train_size': max_train_size,
+        'backtest_months': backtest_months,
+        'recency_alpha': recency_alpha,
+        'method': 'enhanced_rolling',
+        'validation_type': 'enhanced_rolling',  # For UI display
+        'aggregation_method': 'recency_weighted_wape',  # For UI display
+        'validation_completed': True,  # For UI display
+        'num_folds': len(fold_wapes),  # For UI display
+        'training_window_range': f"{min_train_size}-{max_train_size} months",  # For UI display
+        'success': True,
+        
+        # Raw data
+        'validation_results': validation_results,
+        'fold_wapes': fold_wapes,
+        'fold_smapes': fold_smapes,
+        'fold_mases': fold_mases,
+        'weights': weights_normalized.tolist(),
+        
+        # For backtesting compatibility
+        'train_months': validation_results[-1]['train_size'] if validation_results else 0,
+        'test_months': validation_horizon,
+        'backtest_period': backtest_months,
+        'gap': 0,
+        
+        # Chart data from most recent fold for backtesting overlay
+        'train_data': chart_train_data,
+        'test_data': chart_test_data,
+        'predictions': chart_predictions
+    }
+    
+    if diagnostic_messages:
+        diagnostic_messages.append(
+            f"📊 Enhanced rolling validation: {len(fold_wapes)} folds, "
+            f"Weighted WAPE: {recent_weighted_wape:.1%}, "
+            f"Mean WAPE: {mean_wape:.1%}, "
+            f"P75: {p75_wape:.1%}, P95: {p95_wape:.1%}, "
+            f"α={recency_alpha}, trend={'↗' if trend_improving else '↘'}"
+        )
+    
+    return results
+
+
 def comprehensive_validation_suite(actual, forecast, dates=None, product_name="",
                                   enable_walk_forward=False, enable_cross_validation=False,
                                   series=None, model_fitting_func=None, model_params=None,
                                   diagnostic_messages=None,
-                                  backtest_months=12, backtest_gap=1,
-                                  validation_horizon=12, fiscal_year_start_month=1):
+                                  backtest_months=15, backtest_gap=0,
+                                  validation_horizon=3, fiscal_year_start_month=1,
+                                  enable_enhanced_rolling=True, min_train_size=12, max_train_size=18, recency_alpha=0.6):
     """
-    Simplified validation suite that focuses on basic backtesting.
+    Enhanced validation suite with improved rolling backtesting for hyperscale businesses.
     
     Args:
         actual: Array of actual values for basic validation
@@ -783,13 +1041,17 @@ def comprehensive_validation_suite(actual, forecast, dates=None, product_name=""
         model_fitting_func: Function for fitting models in backtesting
         model_params: Parameters for model fitting
         diagnostic_messages: List to append diagnostic messages
-        backtest_months: Number of months to use for backtesting
-        backtest_gap: Gap between training and test data
-        validation_horizon: How far ahead to predict in backtesting
+        backtest_months: Number of months to use for backtesting (default 15)
+        backtest_gap: Gap between training and test data (default 0 for faster feedback)
+        validation_horizon: How far ahead to predict in backtesting (default 3 for quarterly)
         fiscal_year_start_month: Fiscal year start month
+        enable_enhanced_rolling: Use enhanced rolling validation with WAPE and recency weighting
+        min_train_size: Minimum training window in months (default 12)
+        max_train_size: Maximum training window in months (default 18)
+        recency_alpha: Decay factor for recency weighting (default 0.6)
     
     Returns:
-        Dictionary with validation results
+        Dictionary with enhanced validation results
     """
     results = {
         'product_name': product_name,
@@ -828,27 +1090,75 @@ def comprehensive_validation_suite(actual, forecast, dates=None, product_name=""
             if diagnostic_messages:
                 diagnostic_messages.append(f"⚠️ Seasonal MAPE analysis failed for {product_name}: {str(e)[:50]}")
     
-    # Simple backtesting validation
+    # Enhanced rolling backtesting validation
     if series is not None and model_fitting_func is not None:
         try:
-            results['backtesting_validation'] = simple_backtesting_validation(
-                series, model_fitting_func, backtest_months, backtest_gap, 
-                validation_horizon, model_params, diagnostic_messages
-            )
+            if enable_enhanced_rolling:
+                # Use enhanced rolling validation with WAPE and recency weighting
+                results['backtesting_validation'] = enhanced_rolling_validation(
+                    series=series,
+                    model_fitting_func=model_fitting_func,
+                    min_train_size=min_train_size,
+                    max_train_size=max_train_size,
+                    validation_horizon=validation_horizon,
+                    backtest_months=backtest_months,
+                    recency_alpha=recency_alpha,
+                    model_params=model_params,
+                    diagnostic_messages=diagnostic_messages
+                )
+            else:
+                # Fallback to simple backtesting
+                results['backtesting_validation'] = simple_backtesting_validation(
+                    series, model_fitting_func, backtest_months, backtest_gap, 
+                    validation_horizon, model_params, diagnostic_messages
+                )
         except Exception as e:
             if diagnostic_messages:
                 diagnostic_messages.append(f"⚠️ Backtesting validation failed for {product_name}: {str(e)[:50]}")
+            # Fallback to simple backtesting if enhanced fails
+            try:
+                results['backtesting_validation'] = simple_backtesting_validation(
+                    series, model_fitting_func, backtest_months, backtest_gap, 
+                    validation_horizon, model_params, diagnostic_messages
+                )
+            except Exception as e2:
+                if diagnostic_messages:
+                    diagnostic_messages.append(f"⚠️ Fallback backtesting also failed for {product_name}: {str(e2)[:50]}")
     
-    # Method recommendation
+    # Method recommendation with enhanced criteria
     try:
         bt = results.get('backtesting_validation')
         if bt and bt.get('success'):
-            results['method_recommendation'] = {
-                'recommended': 'backtesting',
-                'reason': f"Backtesting successful with {bt.get('mape', 0):.1%} MAPE over {bt.get('test_months', 0)} months",
-                'backtest_mape': bt.get('mape'),
-                'backtest_months': bt.get('backtest_period')
-            }
+            method_used = bt.get('method', 'simple')
+            folds = bt.get('folds', 0)
+            
+            if method_used == 'enhanced_rolling' and folds >= 4:
+                # Enhanced rolling validation with good fold count
+                wape_val = bt.get('recent_weighted_wape', bt.get('wape', 0))
+                consistency = bt.get('fold_consistency', 0)
+                trend_text = "improving" if bt.get('trend_improving') else "stable"
+                quality = "high" if folds >= 5 and consistency > 0.7 else "good"
+                
+                results['method_recommendation'] = {
+                    'recommended': 'enhanced_rolling',
+                    'reason': f"Enhanced rolling with {folds} folds, {quality} quality, {trend_text} trend",
+                    'backtest_wape': wape_val,
+                    'backtest_months': bt.get('backtest_months'),
+                    'quality': quality,
+                    'folds': folds,
+                    'recency_weighted': True,
+                    'uses_wape': True
+                }
+            else:
+                # Simple backtesting or insufficient folds for enhanced
+                mape_val = bt.get('mape', 0)
+                results['method_recommendation'] = {
+                    'recommended': 'simple_backtesting',
+                    'reason': f"Simple backtesting with {folds} folds, WAPE {mape_val:.1%}",
+                    'backtest_mape': mape_val,
+                    'backtest_months': bt.get('backtest_months'),
+                    'fallback_reason': 'insufficient_folds_for_enhanced' if method_used == 'enhanced_rolling' else 'simple_method'
+                }
         else:
             results['method_recommendation'] = {
                 'recommended': 'basic_only',

@@ -655,38 +655,34 @@ def prepare_backtesting_chart_data(backtesting_results, product_name, model_name
     if not backtesting_validation or not isinstance(backtesting_validation, dict):
         return None
     
-    # Extract backtesting data
-    train_data = backtesting_validation.get('train_data')
-    test_data = backtesting_validation.get('test_data')
-    predictions = backtesting_validation.get('predictions')
-    
-    if train_data is None or test_data is None or predictions is None:
+    # If enhanced rolling provided per‑fold series, assemble all folds; else show most recent only
+    chart_rows = []
+    folds = backtesting_validation.get('validation_results') or []
+    if isinstance(folds, list) and len(folds) > 0 and isinstance(folds[0], dict) and 'y_true' in folds[0] and 'y_pred' in folds[0] and 'val_dates' in folds[0]:
+        for f in folds:
+            fold_id = f.get('fold')
+            dates = f.get('val_dates') or []
+            y_true = f.get('y_true') or []
+            y_pred = f.get('y_pred') or []
+            for d, yt in zip(dates, y_true):
+                chart_rows.append({'Date': pd.to_datetime(d), 'ACR': float(yt), 'Type': 'backtest-actual', 'Fold': int(fold_id)})
+            for d, yp in zip(dates, y_pred):
+                chart_rows.append({'Date': pd.to_datetime(d), 'ACR': float(yp), 'Type': 'backtest-prediction', 'Fold': int(fold_id)})
+    else:
+        # Fallback to single most-recent fold data
+        train_data = backtesting_validation.get('train_data')
+        test_data = backtesting_validation.get('test_data')
+        predictions = backtesting_validation.get('predictions')
+        if train_data is None or test_data is None or predictions is None:
+            return None
+        if len(test_data) == len(predictions):
+            for date, pred in zip(test_data.index, predictions):
+                chart_rows.append({'Date': date, 'ACR': pred, 'Type': 'backtest-prediction', 'Fold': 1})
+        for date, actual in test_data.items():
+            chart_rows.append({'Date': date, 'ACR': actual, 'Type': 'backtest-actual', 'Fold': 1})
+    if not chart_rows:
         return None
-    
-    # Create DataFrame for charting
-    chart_data = []
-    
-    # Add backtesting predictions (what the model predicted)
-    if len(test_data) == len(predictions):
-        for i, (date, pred) in enumerate(zip(test_data.index, predictions)):
-            chart_data.append({
-                'Date': date,
-                'ACR': pred,
-                'Type': 'backtest-prediction'
-            })
-    
-    # Add backtesting actuals (real values during test period)
-    for date, actual in test_data.items():
-        chart_data.append({
-            'Date': date,
-            'ACR': actual,
-            'Type': 'backtest-actual'
-        })
-    
-    if not chart_data:
-        return None
-    
-    return pd.DataFrame(chart_data)
+    return pd.DataFrame(chart_rows)
 
 
 def create_forecast_chart(data, product_name, model_name, backtesting_data=None):
@@ -803,7 +799,8 @@ def create_forecast_chart(data, product_name, model_name, backtesting_data=None)
         ).encode(
             x='Date:T',
             y='ACR:Q',
-            tooltip=['Date:T', 'ACR:Q', 'Type:N']
+            tooltip=['Date:T', 'ACR:Q', 'Type:N', 'Fold:N'],
+            detail='Fold:N'
         )
         # Backtesting actuals (real values during validation period)
         backtest_actuals = base_bt.transform_filter(
@@ -815,7 +812,8 @@ def create_forecast_chart(data, product_name, model_name, backtesting_data=None)
         ).encode(
             x='Date:T',
             y='ACR:Q',
-            tooltip=['Date:T', 'ACR:Q', 'Type:N']
+            tooltip=['Date:T', 'ACR:Q', 'Type:N', 'Fold:N'],
+            detail='Fold:N'
         )
         chart_layers.extend([backtest_predictions, backtest_actuals])
     
@@ -1109,12 +1107,21 @@ def display_forecast_results():
     except Exception:
         pass
 
-    # Determine best model (after possible key rename) and normalize any legacy reference
+    # Determine active best metrics aligned with backtesting-driven selection
+    # Prefer selected per-product backtesting WAPEs when available to avoid confusion with non-eligible minima
     best_model = min(avg_mapes, key=avg_mapes.get)
     if best_model == "Best per Product (Raw)" and "Best per Product (Mix)" in results:
         best_model = "Best per Product (Mix)"
     best_model_display = best_model if best_model != "Best per Product (Raw)" else "Best per Product (Mix)"
-    best_mape = avg_mapes[best_model] * 100
+    try:
+        # Use mean of selected per‑product WAPEs (backtesting view) if available
+        if best_mapes_per_product and isinstance(best_mapes_per_product, dict) and len(best_mapes_per_product) > 0:
+            vals = [float(v) for v in best_mapes_per_product.values() if v is not None and np.isfinite(v)]
+            best_mape = (np.mean(vals) * 100.0) if vals else (avg_mapes.get(best_model, 1.0) * 100.0)
+        else:
+            best_mape = avg_mapes.get(best_model, 1.0) * 100.0
+    except Exception:
+        best_mape = avg_mapes.get(best_model, 1.0) * 100.0
 
     # === COMBINED RESULTS SUMMARY (Summary + Key Metrics will render after active view resolved) ===
     st.markdown("## 📈 Results Summary")
@@ -1364,10 +1371,10 @@ def display_forecast_results():
             with st.expander("📊 How Selection Works (Backtesting WAPE)", expanded=False):
                 st.markdown("""
                 **Per‑product selection, scored strictly on backtesting WAPE:**
-                - **Primary:** Mean WAPE across folds
-                - **Tie‑breaks:** p75 WAPE → MASE → recent worst‑month error
-                - **Eligibility:** ≥24 mo history, ≥2 folds (h=6), MASE < 1.0, p95 WAPE ≤ 2× mean, and ≥5% WAPE better than Seasonal‑Naive
-                - **Fallback:** If ineligible/insufficient data → Seasonal‑Naive (or ETS[A,A,A])
+                - **Primary:** Recency‑weighted mean WAPE across folds (falls back to mean WAPE)
+                - **Tie‑breaks:** p75 WAPE → MASE → trend‑improvement check
+                - **Eligibility:** Enough history for ≥4 folds (current config ≈ 30 months), MASE < 1.0, ≥10% better WAPE than Seasonal‑Naive, and stability p95 WAPE ≤ 2.25× mean (≤2.5× with high fold consistency; stricter thresholds for LightGBM).
+                - **Fallback:** If backtesting is insufficient, the app falls back to **Best per Product (Standard)** multi‑metric selection. Seasonal‑Naive remains the baseline and may be chosen when it is the only eligible option.
                 """)
         else:
             st.success("✅ **Backtesting Applied:** Models are chosen per product by lowest WAPE.")
@@ -2066,12 +2073,12 @@ def display_forecast_results():
                     rows.append({
                         "Product": prod,
                         "Model": model_name,
-                        "WAPE": f"{bt.get('mape', float('nan')):.3f}" if isinstance(bt.get('mape', None), (int, float)) else "N/A",
+                        "WAPE": f"{bt.get('recent_weighted_wape', bt.get('wape', bt.get('mape', float('nan')))):.3f}" if isinstance(bt.get('recent_weighted_wape', bt.get('wape', bt.get('mape', None))), (int, float)) else "N/A",
                         "SMAPE": f"{bt.get('smape', float('nan')):.3f}" if isinstance(bt.get('smape', None), (int, float)) else "N/A",
                         "MASE": f"{bt.get('mase', float('nan')):.3f}" if isinstance(bt.get('mase', None), (int, float)) else "N/A",
                         "RMSE": f"{bt.get('rmse', float('nan')):.0f}" if isinstance(bt.get('rmse', None), (int, float)) else "N/A",
-                        "p75_WAPE": f"{bt.get('p75_mape', float('nan')):.3f}" if isinstance(bt.get('p75_mape', None), (int, float)) else "N/A",
-                        "p95_WAPE": f"{bt.get('p95_mape', float('nan')):.3f}" if isinstance(bt.get('p95_mape', None), (int, float)) else "N/A",
+                        "p75_WAPE": f"{bt.get('p75_wape', bt.get('p75_mape', float('nan'))):.3f}" if isinstance(bt.get('p75_wape', bt.get('p75_mape', None)), (int, float)) else "N/A",
+                        "p95_WAPE": f"{bt.get('p95_wape', bt.get('p95_mape', float('nan'))):.3f}" if isinstance(bt.get('p95_wape', bt.get('p95_mape', None)), (int, float)) else "N/A",
                         "Folds": bt.get('iterations', bt.get('folds', 'N/A')),
                         "BacktestMonths": bt.get('backtest_period', 'N/A'),
                         "ValHorizon": bt.get('validation_horizon', 'N/A'),
@@ -2080,6 +2087,21 @@ def display_forecast_results():
 
             if rows:
                 df_bt = pd.DataFrame(rows)
+                
+                # Find the best (lowest) weighted WAPE for highlighting
+                numeric_wapes = []
+                for row in rows:
+                    wape_str = row["WAPE"]
+                    try:
+                        if wape_str != "N/A":
+                            numeric_wapes.append(float(wape_str))
+                    except (ValueError, TypeError):
+                        pass
+                
+                if numeric_wapes:
+                    min_wape = min(numeric_wapes)
+                    st.info(f"🏆 **Best Weighted WAPE**: {min_wape:.1%} across all models")
+                
                 st.dataframe(df_bt, use_container_width=True, hide_index=True)
             else:
                 st.info("No backtesting rows available for the selected product.")

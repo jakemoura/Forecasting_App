@@ -119,10 +119,16 @@ def process_forecast(uploaded, config):
             enable_prophet_holidays=config['enable_prophet_holidays'],
             enable_backtesting=enable_backtesting,
             use_backtesting_selection=True,
-            backtest_months=int(config.get('backtest_months', 12)),
+            backtest_months=int(config.get('backtest_months', 15)),  # Changed default from 12 to 15
             backtest_gap=int(config.get('backtest_gap', 0)),
-            validation_horizon=int(config.get('validation_horizon', 6)),
-            fiscal_year_start_month=int(config.get('fiscal_year_start_month', 1))
+            validation_horizon=int(config.get('validation_horizon', 3)),  # default quarterly
+            fiscal_year_start_month=int(config.get('fiscal_year_start_month', 1)),
+            # Enhanced rolling validation parameters (configurable)
+            enable_enhanced_rolling=bool(config.get('enable_enhanced_rolling', True)),
+            min_train_size=int(config.get('enhanced_min_train_size', 12)),
+            max_train_size=int(config.get('enhanced_max_train_size', 18)),
+            recency_alpha=float(config.get('enhanced_recency_alpha', 0.6))
+            ,enable_expanding_cv=bool(config.get('enable_expanding_cv', False))
         )
 
         # Unpack pipeline results (now includes backtesting results)

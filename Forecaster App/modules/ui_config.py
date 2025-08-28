@@ -177,9 +177,9 @@ def create_business_adjustments_section():
 
 
 def create_accuracy_validation_section():
-    """Create Accuracy & Validation controls with smart backtesting recommendations."""
+    """Create Accuracy & Validation controls with enhanced rolling validation."""
     with st.sidebar.expander("🎯 **Accuracy & Validation**", expanded=True):
-        st.caption("Smart backtesting validates models against historical data for better accuracy. More months = more robust validation.")
+        st.caption("Enhanced rolling validation uses 4-6 quarterly folds with 12-18 month training windows and recency-weighted WAPE for robust model evaluation.")
         
         # Get enhanced data context for smart recommendations
         data_context = st.session_state.get('data_context', {})
@@ -189,15 +189,15 @@ def create_accuracy_validation_section():
         # Check if data analysis is complete
         analysis_complete = st.session_state.get('data_analysis_complete', False)
         
-        # Smart backtesting slider with data-driven recommendations
+        # Enhanced rolling validation recommendations
         st.markdown("#### 📊 **Backtesting Period**")
         st.markdown("")  # Add spacing
         
         if analysis_complete and recommendations:
             # Use data-driven recommendations
-            min_value = recommendations.get('min_value', 6)
-            max_value = recommendations.get('max_value', 24)
-            default_value = recommendations.get('default_value', 12)
+            min_value = recommendations.get('min_value', 12)
+            max_value = recommendations.get('max_value', 18)
+            default_value = recommendations.get('default_value', 15)
             
             # Clean, compact data quality status
             status_icon = recommendations.get('icon', '📊')
@@ -213,8 +213,8 @@ def create_accuracy_validation_section():
             else:
                 st.success(f"{status_icon} **{status_title}**: {status_desc}")
             
-            # Compact recommendation
-            st.caption(f"💡 {recommendations.get('message', 'Use data-driven backtesting')}")
+            # Enhanced rolling validation recommendation
+            st.caption(f"💡 Enhanced rolling validation recommended: 15 months with 4-6 quarterly folds.")
             
             # Simplified metrics in one row
             if data_quality and 'score' in data_quality:
@@ -226,32 +226,32 @@ def create_accuracy_validation_section():
                 # Persist recommendations so the main page can echo them exactly
                 st.session_state['recommended_backtest_text'] = recommendations.get('message', '')
                 st.session_state['recommended_backtest_range'] = (
-                    recommendations.get('min_value', 6), recommendations.get('max_value', 24)
+                    recommendations.get('min_value', 12), recommendations.get('max_value', 18)
                 )
-                st.session_state['recommended_backtest_default'] = recommendations.get('default_value', 12)
+                st.session_state['recommended_backtest_default'] = recommendations.get('default_value', 15)
         elif analysis_complete:
             # Analysis complete but no recommendations - show status
             st.success("✅ **Data Analysis Complete!**")
-            st.caption("Processing recommendations...")
+            st.caption("Processing enhanced rolling validation recommendations...")
             
             # Use calculated recommendations if available, otherwise fallback
             if recommendations:
-                min_value = recommendations.get('min_value', 6)
-                max_value = recommendations.get('max_value', 24)
-                default_value = recommendations.get('default_value', 12)
+                min_value = recommendations.get('min_value', 12)
+                max_value = recommendations.get('max_value', 18)
+                default_value = recommendations.get('default_value', 15)
             else:
-                # Fallback values
-                min_value = 6
-                max_value = 24
-                default_value = 12
+                # Enhanced rolling validation fallback values
+                min_value = 12
+                max_value = 18
+                default_value = 15
         else:
             # No data uploaded yet - show waiting state
-            st.info("📤 **Please upload data for recommendations**")
+            st.info("📤 **Please upload data for enhanced validation recommendations**")
             
             # Disable slider until data is uploaded
-            min_value = 6
-            max_value = 24
-            default_value = 12
+            min_value = 12
+            max_value = 18
+            default_value = 15
         
         # Only enable slider if analysis is complete
         slider_disabled = not analysis_complete
@@ -260,11 +260,11 @@ def create_accuracy_validation_section():
         backtest_months = st.slider(
             "Backtest last X months",
             min_value=12,
-            max_value=24,
-            value=18,
+            max_value=18,
+            value=15,
             step=1,
             disabled=slider_disabled,
-            help=f"Smart recommendation: {recommendations.get('recommended_range', '6-24 months') if analysis_complete else 'Upload data first'} based on your data"
+            help=f"Enhanced rolling validation: {recommendations.get('recommended_range', '12-15 months') if analysis_complete else 'Upload data first'} with quarterly folds"
         )
         
         # Simple backtesting - no advanced settings needed
@@ -286,20 +286,34 @@ def create_accuracy_validation_section():
         )
         fiscal_year_start_month = next(m for m, label in months if label == selected_label)
 
+        # Optional: Expanding CV diagnostics (slower). Redundant with enhanced rolling.
+        enable_expanding_cv = st.checkbox(
+            "Enable expanding CV diagnostics (slower)",
+            value=False,
+            help="Adds expanding-window CV summary for each model. Disable for faster runs; enhanced rolling already drives selection."
+        )
+
     # Simple backtesting flag - always enabled for reliable validation
     enable_backtesting = True
 
     # Persist the chosen values for display elsewhere
     st.session_state['chosen_backtest_months'] = int(backtest_months)
-    st.session_state['chosen_validation_horizon'] = 6
+    st.session_state['chosen_validation_horizon'] = 3  # Changed from 6 to 3 for quarterly validation
     st.session_state['chosen_backtest_gap'] = 0
 
     return {
         'enable_backtesting': enable_backtesting,
         'backtest_months': int(backtest_months),
         'backtest_gap': 0,
-        'validation_horizon': 6,
-        'fiscal_year_start_month': int(fiscal_year_start_month)
+        'validation_horizon': 3,  # Changed from 6 to 3 for quarterly validation
+        'fiscal_year_start_month': int(fiscal_year_start_month),
+        # Expose enhanced rolling params so users can tweak if needed (kept hidden in UI for now)
+        'enable_enhanced_rolling': True,
+        'enhanced_min_train_size': 12,
+        'enhanced_max_train_size': 18,
+        'enhanced_recency_alpha': 0.6,
+        # Speed knob from UI
+        'enable_expanding_cv': bool(enable_expanding_cv)
     }
 
 

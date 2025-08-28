@@ -52,7 +52,7 @@ Two professional-grade Streamlit applications for business revenue forecasting:
 **Forecaster App:**
 - **Format**: Excel/CSV with Date, Product, ACR columns
 - **Time index**: Regular monthly/weekly/daily (gaps handled automatically)
-- **History**: ≥24 months recommended for backtesting eligibility; ≥12 months minimum
+- **History**: ~30+ months typically needed for full backtesting eligibility; ≥12 months minimum
 - **Products**: Consistent identifiers across time periods
 
 **Quarterly Outlook Forecaster:**  
@@ -66,9 +66,9 @@ Two professional-grade Streamlit applications for business revenue forecasting:
 
 **🏆 Best per Product (Backtesting) - Default & Recommended:**
 - **Process**: Rigorous walk-forward validation per product with strict eligibility
-- **Eligibility**: ≥24 months history, ≥2 backtesting folds, MASE < 1.0, ≥5% better than Seasonal-Naive
-- **Scoring**: Primary WAPE → p75 WAPE → MASE → recent worst-month (tie-breaking hierarchy)
-- **Safeguards**: Stability checks (p95 WAPE ≤ 2× mean), polynomial deprioritization for revenue
+- **Eligibility**: Enough history for **≥4 folds** (typically ~30+ months), **MASE < 1.0** (LightGBM < 0.8), **≥10% better WAPE** than Seasonal‑Naive, and stability **p95 ≤ 2.25× mean** (≤2.5× with high fold consistency)
+- **Scoring**: **Recency‑weighted mean WAPE** → p75 WAPE → MASE → trend improvement check
+- **Safeguards**: Stability checks and business‑aware deprioritization of polynomial models for revenue
 
 **📊 Best per Product (Standard) - Fallback:**
 - **Process**: Multi-metric ranking across WAPE, SMAPE, MASE, RMSE
@@ -81,10 +81,10 @@ Two professional-grade Streamlit applications for business revenue forecasting:
 - **Selection**: Choose when you prefer single-model interpretation
 
 **⚙️ Backtesting Configuration:**
+- **Backtest period**: 15 months (~4–6 folds)
 - **Gap**: 0 months (optimized automatically)
-- **Horizon**: 6 months (optimized for real forecasting scenarios)
-- **Step size**: 6 months (captures seasonal cycles)
-- **Fallback**: Automatic degradation to Standard selection when history insufficient
+- **Validation horizon**: 3 months (quarterly validation)
+- **Fallback**: Automatic degradation to Standard selection when history is insufficient
 
 ### Quarter Outlook Forecaster (Daily Data)
 

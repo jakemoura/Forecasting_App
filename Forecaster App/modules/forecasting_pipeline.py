@@ -8,10 +8,12 @@ that coordinates data processing, model fitting, and results generation.
 import io
 import itertools
 import warnings
+import time
 import numpy as np
 import pandas as pd
 import streamlit as st
 from datetime import datetime
+TRAIN_WINDOW_MONTHS = 18
 from pathlib import Path
 
 # Local imports
@@ -23,7 +25,7 @@ from .models import (
     create_prophet_fitting_function, create_polynomial_fitting_function, fit_seasonal_naive, ENABLE_PROPHET, ENABLE_LGBM,
     create_lightgbm_fitting_function
 )
-from .metrics import calculate_validation_metrics, comprehensive_validation_suite, walk_forward_validation
+from .metrics import calculate_validation_metrics, comprehensive_validation_suite, walk_forward_validation, enhanced_rolling_validation
 from .utils import coerce_month_start
 from .ui_components import fy
 
@@ -73,9 +75,27 @@ DRIFT_CFG: dict = {
     "hist_cv_min": 0.0,
 }
 
-_DRIFT_DIAGNOSTICS_REF: list = None
+_DRIFT_DIAGNOSTICS_REF: list = []
 DRIFT_APPLIED_PRODUCTS: set = set()
 
+
+# Global timer for ETA calculations during pipeline runs
+PIPELINE_START_TIME: float = 0.0
+
+
+def _format_eta(seconds: int) -> str:
+    """Format seconds into a short human-readable ETA string."""
+    try:
+        seconds = max(0, int(seconds))
+        m, s = divmod(seconds, 60)
+        h, m = divmod(m, 60)
+        if h > 0:
+            return f"{h}h {m}m"
+        if m > 0:
+            return f"{m}m {s}s"
+        return f"{s}s"
+    except Exception:
+        return "--"
 
 def _maybe_apply_drift(series: pd.Series, forecast, model_name: str, product: str):
     """Optionally apply gentle linear drift carry to overly flat forecasts.
@@ -143,15 +163,21 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
                             enable_business_aware_selection=True, enable_prophet_holidays=False,
                             enable_backtesting=True,
                             use_backtesting_selection: bool = True,
-                            backtest_months: int = 12,
-                            backtest_gap: int = 0,
-                            validation_horizon: int = 6,
+                            backtest_months: int = 15,  # Changed from 12 to 15 for 4-6 folds
+                            backtest_gap: int = 0,      # Changed from default to 0 for faster feedback
+                            validation_horizon: int = 3, # Changed from 6 to 3 for quarterly validation
                             fiscal_year_start_month: int = 1,
                             enable_per_product_drift: bool = False,
                             drift_min_pct: float = 0.005,
                             drift_max_pct: float = 0.03,
                             drift_forecast_cv_threshold: float = 0.01,
-                            drift_hist_cv_min: float = 0.02):
+                            drift_hist_cv_min: float = 0.02,
+                            # Enhanced rolling validation parameters
+                            enable_enhanced_rolling: bool = True,
+                            min_train_size: int = 12,
+                            max_train_size: int = 18,
+                            recency_alpha: float = 0.6,
+                            enable_expanding_cv: bool = False):
     """
     Main forecasting pipeline that processes data and runs all selected models.
     
@@ -167,12 +193,22 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
         enable_business_aware_selection: Whether to use business-aware model selection
         enable_prophet_holidays: Whether to include holidays in Prophet
         enable_backtesting: Whether to run backtesting validation analysis
-                # Note: Walk-forward and cross-validation removed in favor of simple backtesting
-    use_backtesting_selection: If True, override per-product selection using backtesting diagnostics
-    enable_per_product_drift: If True, apply gentle drift carry only on products whose model forecast is excessively flat.
-    drift_min_pct / drift_max_pct: Monthly pct slope bounds (relative to recent mean) for applying drift.
-    drift_forecast_cv_threshold: Max coefficient of variation of first 6 forecast points to consider "flat".
-    drift_hist_cv_min: Minimum historical CV (recent 12) indicating some variability exists.
+        use_backtesting_selection: If True, override per-product selection using backtesting diagnostics
+        backtest_months: Number of months to use for backtesting (default 15 for 4-6 folds)
+        backtest_gap: Gap between training and validation (default 0 for faster feedback)
+        validation_horizon: Validation horizon per fold (default 3 for quarterly)
+        fiscal_year_start_month: Fiscal year start month
+        enable_per_product_drift: If True, apply gentle drift carry only on products whose model forecast is excessively flat.
+        drift_min_pct / drift_max_pct: Monthly pct slope bounds (relative to recent mean) for applying drift.
+        drift_forecast_cv_threshold: Max coefficient of variation of first 6 forecast points to consider "flat".
+        drift_hist_cv_min: Minimum historical CV (recent 12) indicating some variability exists.
+        
+        # Enhanced rolling validation parameters
+        enable_enhanced_rolling: Use enhanced rolling validation with WAPE and recency weighting (default True)
+        min_train_size: Minimum training window in months (default 12)
+        max_train_size: Maximum training window in months (default 18)
+        recency_alpha: Decay factor for recency weighting, 0.5-0.8 (default 0.6)
+        enable_expanding_cv: Optional expanding-window CV diagnostics (slower); disabled by default
     
     Returns:
         Tuple of (results_dict, avg_mapes_dict, sarima_params_dict, diagnostic_messages,
@@ -199,7 +235,17 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
     # Enhanced logging: Pipeline initialization
     diagnostic_messages.append(f"🚀 **Pipeline Initialization**: Starting forecast pipeline with {len(models_selected)} models for {len(products)} products")
     diagnostic_messages.append(f"📊 **Data Overview**: Total data points: {len(raw_data)}, Date range: {raw_data['Date'].min()} to {raw_data['Date'].max()}")
-    diagnostic_messages.append(f"⚙️ **Configuration**: Backtesting: {enable_backtesting}, Business-aware: {enable_business_aware_selection}, Statistical validation: {enable_statistical_validation}")
+    
+    # Enhanced configuration logging
+    backtesting_mode = "Enhanced Rolling" if enable_enhanced_rolling else "Simple"
+    diagnostic_messages.append(f"⚙️ **Configuration**: Backtesting: {enable_backtesting} ({backtesting_mode}), Business-aware: {enable_business_aware_selection}, Statistical validation: {enable_statistical_validation}")
+    
+    if enable_enhanced_rolling:
+        diagnostic_messages.append(f"🔧 **Enhanced Rolling Config**: Train window: {min_train_size}-{max_train_size}mo, Validation: {validation_horizon}mo, Backtest period: {backtest_months}mo, Recency α: {recency_alpha}")
+    else:
+        diagnostic_messages.append(f"🔧 **Simple Backtesting Config**: Backtest period: {backtest_months}mo, Gap: {backtest_gap}mo, Validation horizon: {validation_horizon}mo")
+    if enable_expanding_cv:
+        diagnostic_messages.append("⏱️ Expanding CV diagnostics enabled (slower)")
     
     # Prepare data
     try:
@@ -222,10 +268,27 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
         raise ValueError("No models selected or no valid products found with sufficient data")
     
     diagnostic_messages.append(f"✅ **Validation Complete**: {len(valid_products)} products passed quality checks, {len(products) - len(valid_products)} products failed")
+    try:
+        diagnostic_messages.append(f"🧩 **Packages**: pmdarima={HAVE_PMDARIMA}, prophet={HAVE_PROPHET}, lightgbm={HAVE_LGBM}")
+    except Exception:
+        pass
+    try:
+        diagnostic_messages.append("🗂️ **Models Selected**: " + ", ".join(models_selected))
+    except Exception:
+        pass
     diagnostic_messages.append(f"📈 **Processing Scope**: Will run {len(models_selected)} models on {len(valid_products)} products = {total} total operations")
+    diagnostic_messages.append("⏱️ Backtesting with multiple folds per product; runs may take a few minutes depending on data size.")
     
-    # Initialize progress tracking
-    prog = st.progress(0.0, text="Running models…")
+    # Initialize progress tracking + ETA
+    global PIPELINE_START_TIME
+    PIPELINE_START_TIME = time.time()
+    prog = st.progress(0.0, text="Running models… (estimating time)")
+    # Dedicated ETA line beneath the progress bar for clearer visibility in the UI
+    eta_ph = st.empty()
+    try:
+        eta_ph.markdown("⏳ ETA: estimating…")
+    except Exception:
+        pass
     done = 0
     
     # Coerce selected models to allowed defaults + Auto-ARIMA if available
@@ -311,15 +374,25 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
             business_growth_assumption, market_multiplier, market_conditions,
             enable_prophet_holidays, enable_backtesting, backtest_months, backtest_gap, validation_horizon,
             fiscal_year_start_month,
-            backtesting_results, prog, done, total
+            backtesting_results, prog, eta_ph, done, total,
+            enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv
         )
     
     prog.empty()
+    try:
+        eta_ph.empty()
+    except Exception:
+        pass
     
     # Process results
     results = _process_model_results(results)
     
-    # Calculate metrics and rankings
+    # Update all model metrics with enhanced rolling validation WAPE if backtesting was performed
+    # This must happen BEFORE calculating averages and model selection
+    if backtesting_results:
+        _update_metrics_with_enhanced_validation(mapes, smapes, mases, rmses, backtesting_results, diagnostic_messages)
+
+    # Calculate metrics and rankings using updated metrics
     avg_mapes, avg_smapes, avg_mases, avg_rmses, model_avg_ranks = _calculate_average_metrics(
         mapes, smapes, mases, rmses, results, products
     )
@@ -340,74 +413,104 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
         for product in list(best_models_per_product_standard.keys()):
             per_model = backtesting_results.get(product, {})
             # Enforce strict eligibility policy and score by backtesting-only WAPE (legacy 'mape')
-            def score_validation(v):
+            def score_validation(name: str, v):
                 if not v:
-                    return (np.inf, np.inf, 9e9)
+                    return (np.inf, np.inf, 9e9, 1.0)
                 bt = v.get('backtesting_validation') or {}
-                # Eligibility: at least 2 folds, mean_mase < 1.0, relative WAPE improvement vs seasonal-naive >= 5%, p95 <= 2x mean
-                # We expect aggregation to include these; otherwise, mark ineligible.
-                folds = bt.get('folds', bt.get('iterations'))
+                # Eligibility (hyperscaler policy):
+                # - folds >= 4
+                # - mean_mase < 1.0
+                # - improvement vs seasonal‑naive >= 10%
+                # - p95 <= 2.25× mean (2.5× if fold_consistency >= 0.75)
+                folds = bt.get('folds')
                 mean_mase = bt.get('mean_mase')
-                p95 = bt.get('p95_mape', np.nan)
-                # Prefer recency‑weighted mean if present
-                m = bt.get('recent_weighted_mape', bt.get('mape', np.inf))
+                p95 = bt.get('p95_wape', np.nan)  # Use WAPE instead of MAPE
+                # Prefer recency‑weighted WAPE if present
+                m = bt.get('recent_weighted_wape', bt.get('wape', np.inf))  # Prefer WAPE
+                p75 = bt.get('p75_wape', m)
+                fold_consistency = bt.get('fold_consistency', 0.0)
+                trend_improving = bool(bt.get('trend_improving', False))
                 # Beat seasonal naive if comparative present
                 rel_ok = True
                 try:
                     naive = per_model.get('Seasonal-Naive', {}).get('backtesting_validation', {})
-                    naive_wape = naive.get('recent_weighted_mape', naive.get('mape', np.inf))
+                    naive_wape = naive.get('recent_weighted_wape', naive.get('wape', np.inf))  # Use WAPE
                     if np.isfinite(m) and np.isfinite(naive_wape) and naive_wape > 0:
-                        rel_ok = (naive_wape - m) / naive_wape >= 0.05
+                        rel_ok = (naive_wape - m) / naive_wape >= 0.10
                 except Exception:
                     rel_ok = True
-                if folds is not None and int(folds) < 2:
-                    return (np.inf, np.inf, 9e9)
-                if mean_mase is not None and np.isfinite(mean_mase) and mean_mase >= 1.0:
-                    return (np.inf, np.inf, 9e9)
-                if np.isfinite(p95) and np.isfinite(m) and p95 > 2.0 * m:
-                    return (np.inf, np.inf, 9e9)
+                if folds is not None and int(folds) < 4:
+                    return (np.inf, np.inf, 9e9, 1.0)
+                # Stricter MASE for LightGBM
+                if mean_mase is not None and np.isfinite(mean_mase):
+                    if name == "LightGBM" and mean_mase >= 0.8:
+                        return (np.inf, np.inf, 9e9, 1.0)
+                    if mean_mase >= 1.0:
+                        return (np.inf, np.inf, 9e9, 1.0)
+                # Stability threshold with waiver on high consistency
+                p95_threshold = 2.25
+                if isinstance(fold_consistency, (int, float)) and fold_consistency is not None and np.isfinite(fold_consistency) and fold_consistency >= 0.75:
+                    p95_threshold = 2.5
+                # Stricter stability for LightGBM
+                if name == "LightGBM":
+                    p95_threshold = 2.0
+                if np.isfinite(p95) and np.isfinite(m) and p95 > p95_threshold * m:
+                    return (np.inf, np.inf, 9e9, 1.0)
                 if not rel_ok:
-                    return (np.inf, np.inf, 9e9)
+                    return (np.inf, np.inf, 9e9, 1.0)
                 wape_mean = m if np.isfinite(m) else np.inf
-                # If fold stats exist elsewhere, read p75; otherwise use mean
-                p75 = bt.get('recent_p75_mape', bt.get('p75_mape', wape_mean))
                 mase_val = bt.get('mase', bt.get('mean_mase', np.nan))
-                return (wape_mean, p75, np.nan_to_num(mase_val, nan=9e9))
+                trend_penalty = 0.0 if trend_improving else 1.0
+                return (wape_mean, p75, np.nan_to_num(mase_val, nan=9e9), trend_penalty)
 
             # helper to provide eligibility reason for tooltips
             def eligibility_reason(name: str, v):
                 if not v:
                     return False, "no backtesting results", (np.inf, np.inf, 9e9)
                 bt = v.get('backtesting_validation') or {}
-                folds = bt.get('folds', bt.get('iterations'))
+                folds = bt.get('folds')
                 mean_mase = bt.get('mean_mase')
-                p95 = bt.get('p95_mape', np.nan)
-                m = bt.get('mape', np.inf)
-                p75 = bt.get('p75_mape', m)
+                p95 = bt.get('p95_wape', np.nan)  # Use WAPE instead of MAPE
+                m = bt.get('recent_weighted_wape', bt.get('wape', np.inf))  # Prefer recent_weighted_wape
+                p75 = bt.get('p75_wape', m)  # Use WAPE instead of MAPE
+                fold_consistency = bt.get('fold_consistency', 0.0)
                 mase_val = bt.get('mase', bt.get('mean_mase', np.nan))
                 # seasonal-naive relative improvement
                 rel_ok = True
                 rel_msg = ""
                 try:
                     naive = per_model.get('Seasonal-Naive', {}).get('backtesting_validation', {})
-                    naive_wape = naive.get('recent_weighted_mape', naive.get('mape', np.inf))
+                    naive_wape = naive.get('recent_weighted_wape', naive.get('wape', np.inf))  # Use WAPE
                     if np.isfinite(m) and np.isfinite(naive_wape) and naive_wape > 0:
-                        rel_ok = (naive_wape - m) / naive_wape >= 0.05
+                        rel_ok = (naive_wape - m) / naive_wape >= 0.10
                         if not rel_ok:
-                            rel_msg = f"<5% better than Seasonal‑Naive (Δ={(naive_wape - m)/naive_wape:.1%})"
+                            rel_msg = f"<10% better than Seasonal‑Naive (Δ={(naive_wape - m)/naive_wape:.1%})"
                 except Exception:
                     rel_ok = True
-                if folds is not None and int(folds) < 2:
+                if folds is not None and int(folds) < 4:
                     return False, "<2 CV folds", (m, p75, np.nan_to_num(mase_val, nan=9e9))
-                if mean_mase is not None and np.isfinite(mean_mase) and mean_mase >= 1.0:
-                    return False, "MASE ≥ 1.0 (did not beat seasonal‑naive)", (m, p75, np.nan_to_num(mase_val, nan=9e9))
-                if np.isfinite(p95) and np.isfinite(m) and p95 > 2.0 * m:
-                    return False, "p95 WAPE > 2× mean (unstable)", (m, p75, np.nan_to_num(mase_val, nan=9e9))
+                if mean_mase is not None and np.isfinite(mean_mase):
+                    if name == "LightGBM" and mean_mase >= 0.8:
+                        return False, "LightGBM MASE ≥ 0.8 threshold", (m, p75, np.nan_to_num(mase_val, nan=9e9))
+                    if mean_mase >= 1.0:
+                        return False, "MASE ≥ 1.0 (did not beat seasonal‑naive)", (m, p75, np.nan_to_num(mase_val, nan=9e9))
+                p95_threshold = 2.25
+                if isinstance(fold_consistency, (int, float)) and fold_consistency is not None and np.isfinite(fold_consistency) and fold_consistency >= 0.75:
+                    p95_threshold = 2.5
+                if name == "LightGBM":
+                    p95_threshold = 2.0
+                if np.isfinite(p95) and np.isfinite(m) and p95 > p95_threshold * m:
+                    return False, f"p95 WAPE > {p95_threshold:.2f}× mean (unstable)", (m, p75, np.nan_to_num(mase_val, nan=9e9))
                 if not rel_ok:
                     return False, rel_msg or "<5% better than Seasonal‑Naive", (m, p75, np.nan_to_num(mase_val, nan=9e9))
                 return True, "eligible", (m, p75, np.nan_to_num(mase_val, nan=9e9))
             if per_model:
-                pairs = [(m, score_validation(res)) for m, res in per_model.items()]
+                def _model_priority(name: str) -> float:
+                    if name in ("ETS", "SARIMA"): return 0.0
+                    if name in ("Prophet", "Auto-ARIMA"): return 1.0
+                    if name in ("LightGBM",): return 2.0
+                    return 3.0
+                pairs = [(m, (*score_validation(m, res), _model_priority(m))) for m, res in per_model.items()]
                 finite_pairs = [(m, s) for m, s in pairs if np.isfinite(s[0])] or pairs
 
                 # Separate non-polynomial and polynomial candidates
@@ -659,7 +762,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
                            business_growth_assumption, market_multiplier, market_conditions,
                            enable_prophet_holidays, enable_backtesting, backtest_months, backtest_gap, validation_horizon,
                            fiscal_year_start_month,
-                           backtesting_results, prog, done, total):
+                           backtesting_results, prog, eta_ph, done, total,
+                           enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv):
     """Run all selected models for a single product."""
     
     seasonality_strength = detect_seasonality_strength(series)
@@ -672,7 +776,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             sarima_params, diagnostic_messages, seasonality_strength, enable_statistical_validation,
             apply_business_adjustments, business_growth_assumption, market_multiplier, market_conditions,
             enable_backtesting, backtest_months, backtest_gap,
-            validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total
+            validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total,
+            enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv
         )
     
     # ETS model
@@ -683,7 +788,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
             business_growth_assumption, market_multiplier, enable_backtesting,
             backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results,
-            prog, done, total
+            prog, eta_ph, done, total,
+            enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv
         )
     
     # Seasonal-Naive baseline
@@ -693,7 +799,15 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             # Validation forecast
             pv_naive = fit_seasonal_naive(train.values if hasattr(train, 'values') else train, len(val), seasonal_period=12)
             val_mape, val_smape, val_mase, val_rmse = calculate_validation_metrics(val, pv_naive, train)
-            mapes["Seasonal-Naive"].append(val_mape)
+            
+            # Use enhanced rolling validation WAPE if available, otherwise fall back to basic validation
+            enhanced_wape = None
+            if backtesting_results.get(product, {}).get("Seasonal-Naive", {}).get('backtesting_validation'):
+                bt_results = backtesting_results[product]["Seasonal-Naive"]['backtesting_validation']
+                enhanced_wape = bt_results.get('recent_weighted_wape', bt_results.get('wape', bt_results.get('mape')))
+            
+            final_mape = enhanced_wape if enhanced_wape is not None else val_mape
+            mapes["Seasonal-Naive"].append(final_mape)
             smapes["Seasonal-Naive"].append(val_smape)
             mases["Seasonal-Naive"].append(val_mase)
             rmses["Seasonal-Naive"].append(val_rmse)
@@ -739,8 +853,48 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
                             backtest_months=backtest_months,
                             backtest_gap=backtest_gap,
                             validation_horizon=validation_horizon,
-                            fiscal_year_start_month=fiscal_year_start_month
+                            fiscal_year_start_month=fiscal_year_start_month,
+                            enable_enhanced_rolling=enable_enhanced_rolling,
+                            min_train_size=min_train_size,
+                            max_train_size=max_train_size,
+                            recency_alpha=recency_alpha
                         )
+                        # Recent-focused CV aggregation (TRAIN_WINDOW_MONTHS)
+                        if enable_expanding_cv:
+                            try:
+                                cv = walk_forward_validation(
+                                    series=series,
+                                    model_fitting_func=naive_fit_fn,
+                                    window_size=TRAIN_WINDOW_MONTHS,
+                                    step_size=validation_horizon,
+                                    horizon=validation_horizon,
+                                    model_params={},
+                                    diagnostic_messages=diagnostic_messages,
+                                    gap=backtest_gap
+                                )
+                                bt_dict = validation_results.get('backtesting_validation', {}) or {}
+                                if cv:
+                                    fold_wapes = cv.get('wapes_by_fold') or cv.get('mape_scores')
+                                    if fold_wapes:
+                                        alpha = 0.6
+                                        w = alpha ** np.arange(len(fold_wapes) - 1, -1, -1)
+                                        w = w / w.sum()
+                                        bt_dict['recent_weighted_wape'] = float(np.dot(fold_wapes, w))
+                                    bt_dict.update({
+                                        'success': True,
+                                        'wape': cv.get('mean_wape', cv.get('mean_mape')),
+                                        'p75_wape': cv.get('p75_wape', cv.get('p75_mape')),
+                                        'p95_wape': cv.get('p95_wape', cv.get('p95_mape')),
+                                        'mase': cv.get('mean_mase'),
+                                        'folds': cv.get('folds', cv.get('iterations')),
+                                        'backtest_period': backtest_months,
+                                        'validation_horizon': validation_horizon
+                                    })
+                                    diagnostic_messages.append(
+                                        f"CV[Seasonal-Naive] folds={bt_dict['folds']} wape={bt_dict.get('wape', float('nan')):.3f} p75={bt_dict.get('p75_wape', float('nan')):.3f} rw_wape={bt_dict.get('recent_weighted_wape', np.nan):.3f}")
+                                validation_results['backtesting_validation'] = bt_dict
+                            except Exception:
+                                pass
                         if product not in backtesting_results:
                             backtesting_results[product] = {}
                         backtesting_results[product]["Seasonal-Naive"] = validation_results
@@ -765,7 +919,7 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
                 diagnostic_messages, poly_degree, apply_business_adjustments,
                 business_growth_assumption, market_multiplier,
                 enable_backtesting,
-                backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total
+                backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv
             )
     
     # Prophet model (enabled by flag)
@@ -776,7 +930,7 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             diagnostic_messages, enable_prophet_holidays, enable_statistical_validation,
             apply_business_adjustments, business_growth_assumption, market_multiplier,
             enable_backtesting,
-            backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total
+            backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv
         )
     
     # Auto-ARIMA model
@@ -787,7 +941,7 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
             business_growth_assumption, market_multiplier,
             enable_backtesting,
-            backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total
+            backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv
         )
     
     # LightGBM model (enabled by flag)
@@ -798,7 +952,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
             business_growth_assumption, market_multiplier,
             enable_backtesting,
-            backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total
+            backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total,
+            enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha
         )
     
     return done
@@ -809,7 +964,8 @@ def _run_sarima_model(product, series, train, val, future_idx, act_df, results, 
                      apply_business_adjustments, business_growth_assumption, market_multiplier, market_conditions,
                      enable_backtesting, backtest_months, backtest_gap, validation_horizon,
                      fiscal_year_start_month,
-                     backtesting_results, prog, done, total):
+                     backtesting_results, prog, eta_ph, done, total,
+                     enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv):
     """Run SARIMA model for a product."""
     try:
         # Find best SARIMA parameters
@@ -849,7 +1005,10 @@ def _run_sarima_model(product, series, train, val, future_idx, act_df, results, 
                 pv_val = None
 
             sarima_params[product] = (order, seasonal_order, criterion_value, selection_criterion)
-            mapes["SARIMA"].append(best_validation_mape)
+            
+            # Store initial metrics (will be updated after backtesting if available)
+            initial_mape = best_validation_mape
+            mapes["SARIMA"].append(initial_mape)
             smapes["SARIMA"].append(best_validation_smape)
             mases["SARIMA"].append(best_validation_mase)
             rmses["SARIMA"].append(best_validation_rmse)
@@ -872,7 +1031,14 @@ def _run_sarima_model(product, series, train, val, future_idx, act_df, results, 
                     diagnostic_messages.append(f"❌ SARIMA Product {product}: Forecast generation failed - {str(e)}")
                     _add_failed_metrics("SARIMA", mapes, smapes, mases, rmses)
                     done += 1
-                    prog.progress(min(done / total, 1.0), text=f"Running SARIMA on Product {product} ({done}/{total})")
+                    elapsed = max(1e-6, time.time() - PIPELINE_START_TIME)
+                    avg_per = elapsed / max(1, done)
+                    remaining = int(avg_per * max(0, total - done))
+                    prog.progress(min(done / total, 1.0), text=f"Running SARIMA on Product {product} ({done}/{total}) — ETA {_format_eta(remaining)}")
+                    try:
+                        eta_ph.markdown(f"⏳ ETA: {_format_eta(remaining)}")
+                    except Exception:
+                        pass
                     return done
                 
                 # Apply post-processing
@@ -912,54 +1078,64 @@ def _run_sarima_model(product, series, train, val, future_idx, act_df, results, 
                                 backtest_months=backtest_months,
                                 backtest_gap=backtest_gap,
                                 validation_horizon=validation_horizon,
-                                fiscal_year_start_month=fiscal_year_start_month
+                                fiscal_year_start_month=fiscal_year_start_month,
+                                enable_enhanced_rolling=enable_enhanced_rolling,
+                                min_train_size=min_train_size,
+                                max_train_size=max_train_size,
+                                recency_alpha=recency_alpha
                             )
-                            # Expanding-window CV summary for selection
-                            try:
-                                cv = walk_forward_validation(
-                                    series=series,
-                                    model_fitting_func=sarima_fit_fn,
-                                    window_size=24,
-                                    step_size=validation_horizon,
-                                    horizon=validation_horizon,
-                                    model_params={},
-                                    diagnostic_messages=diagnostic_messages,
-                                    gap=backtest_gap
-                                )
-                                bt_dict = validation_results.get('backtesting_validation', {}) or {}
-                                if cv:
-                                    bt_dict.update({
-                                        'success': True,
-                                        'mape': cv.get('mean_mape'),
-                                        'p75_mape': cv.get('p75_mape'),
-                                        'p95_mape': cv.get('p95_mape'),
-                                        'mase': cv.get('mean_mase'),
-                                        'folds': cv.get('iterations'),
-                                        'backtest_period': backtest_months,
-                                        'validation_horizon': validation_horizon
-                                    })
-                                else:
-                                    bt_dict.update({
-                                        'success': False,
-                                        'error': 'insufficient data for CV',
-                                        'folds': 0,
-                                        'backtest_period': backtest_months,
-                                        'validation_horizon': validation_horizon
-                                    })
-                                validation_results['backtesting_validation'] = bt_dict
-                            except Exception as e:
-                                bt_dict = validation_results.get('backtesting_validation', {}) or {}
-                                bt_dict.update({
-                                    'success': False,
-                                    'error': str(e)[:100],
-                                    'folds': 0,
-                                    'backtest_period': backtest_months,
-                                    'validation_horizon': validation_horizon
-                                })
-                                validation_results['backtesting_validation'] = bt_dict
+                            # Expanding-window CV summary for selection (optional, slower)
+                            if enable_expanding_cv:
+                                try:
+                                    cv = walk_forward_validation(
+                                        series=series,
+                                        model_fitting_func=sarima_fit_fn,
+                                        window_size=TRAIN_WINDOW_MONTHS,
+                                        step_size=validation_horizon,
+                                        horizon=validation_horizon,
+                                        model_params={},
+                                        diagnostic_messages=diagnostic_messages,
+                                        gap=backtest_gap
+                                    )
+                                    bt_dict = validation_results.get('backtesting_validation', {}) or {}
+                                    if cv:
+                                        fold_wapes = cv.get('wapes_by_fold') or cv.get('mape_scores')
+                                        if fold_wapes:
+                                            alpha = 0.6
+                                            w = alpha ** np.arange(len(fold_wapes) - 1, -1, -1)
+                                            w = w / w.sum()
+                                            bt_dict['recent_weighted_wape'] = float(np.dot(fold_wapes, w))
+                                        bt_dict.update({
+                                            'cv_success': True,
+                                            'wape': cv.get('mean_wape', cv.get('mean_mape')),
+                                            'p75_wape': cv.get('p75_wape', cv.get('p75_mape')),
+                                            'p95_wape': cv.get('p95_wape', cv.get('p95_mape')),
+                                            'mase': cv.get('mean_mase'),
+                                            'folds': cv.get('folds', cv.get('iterations')),
+                                            'backtest_period': backtest_months,
+                                            'validation_horizon': validation_horizon
+                                        })
+                                        diagnostic_messages.append(
+                                            f"CV[SARIMA] folds={bt_dict['folds']} wape={bt_dict.get('wape', float('nan')):.3f} p75={bt_dict.get('p75_wape', float('nan')):.3f} rw_wape={bt_dict.get('recent_weighted_wape', np.nan):.3f}")
+                                    else:
+                                        bt_dict.update({'cv_success': False, 'cv_error': 'insufficient data for CV', 'folds': 0})
+                                    validation_results['backtesting_validation'] = bt_dict
+                                except Exception as e:
+                                    bt_dict = validation_results.get('backtesting_validation', {}) or {}
+                                    bt_dict.update({'cv_success': False, 'cv_error': str(e)[:100], 'folds': 0})
+                                    validation_results['backtesting_validation'] = bt_dict
                             if product not in backtesting_results:
                                 backtesting_results[product] = {}
                             backtesting_results[product]["SARIMA"] = validation_results
+                            
+                            # Update SARIMA metrics with enhanced rolling validation WAPE if available
+                            bt_results = validation_results.get('backtesting_validation', {})
+                            enhanced_wape = bt_results.get('recent_weighted_wape', bt_results.get('wape', bt_results.get('mape')))
+                            if enhanced_wape is not None and len(mapes["SARIMA"]) > 0:
+                                # Replace the last appended metric with enhanced rolling validation result
+                                mapes["SARIMA"][-1] = enhanced_wape
+                                diagnostic_messages.append(f"🔄 **SARIMA Metrics Updated**: {product} - Using enhanced rolling validation WAPE: {enhanced_wape:.1%}")
+                            
                             diagnostic_messages.append(f"✅ **SARIMA Backtesting**: Successfully completed backtesting for {product}")
                     except Exception as e:
                         error_msg = str(e)[:100]  # Get more of the error message
@@ -987,7 +1163,14 @@ def _run_sarima_model(product, series, train, val, future_idx, act_df, results, 
         _add_failed_metrics("SARIMA", mapes, smapes, mases, rmses)
     
     done += 1
-    prog.progress(min(done / total, 1.0), text=f"Running SARIMA on Product {product} ({done}/{total})")
+    elapsed = max(1e-6, time.time() - PIPELINE_START_TIME)
+    avg_per = elapsed / max(1, done)
+    remaining = int(avg_per * max(0, total - done))
+    prog.progress(min(done / total, 1.0), text=f"Running SARIMA on Product {product} ({done}/{total}) — ETA {_format_eta(remaining)}")
+    try:
+        eta_ph.markdown(f"⏳ ETA: {_format_eta(remaining)}")
+    except Exception:
+        pass
     return done
 
 
@@ -995,37 +1178,59 @@ def _run_ets_model(product, series, train, val, future_idx, act_df, results, map
                   diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
                   business_growth_assumption, market_multiplier, enable_backtesting, 
                   backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, 
-                  prog, done, total):
+                  prog, eta_ph, done, total,
+                  enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv):
     """Run ETS model for a product."""
     try:
         # Robust fitting via helper to avoid hard failures on seasonal mode
         best_ets_config = None
         pv = None
-        # Try multiplicative, then additive, then no seasonality
-        for seasonal_type_try in ("mul", "add", None):
+        # Build a gated candidate list: default to 'add'; allow 'mul' only when positive and strongly seasonal
+        try:
+            seasonality_strength_local = detect_seasonality_strength(series)
+        except Exception:
+            seasonality_strength_local = 0.0
+        try:
+            strictly_positive = (np.nanmin(np.asarray(series, dtype=float)) > 0)
+        except Exception:
+            strictly_positive = False
+        candidates: list = ["add"]
+        if strictly_positive and seasonality_strength_local >= 0.4:
+            candidates.insert(0, "mul")
+        # Fit gated candidates
+        for seasonal_type_try in candidates:
             try:
-                if seasonal_type_try is None:
-                    model = ExponentialSmoothing(train, trend="add", seasonal=None).fit()
-                else:
-                    model = ExponentialSmoothing(train, trend="add", seasonal=seasonal_type_try, seasonal_periods=12).fit()
+                model = ExponentialSmoothing(train, trend="add", seasonal=seasonal_type_try, seasonal_periods=12).fit()
                 pv_try = model.forecast(len(val))
                 m0, s0, ma0, r0 = calculate_validation_metrics(val, pv_try, train)
                 if best_ets_config is None or (np.isfinite(m0) and m0 < best_ets_config[1]):
-                    best_ets_config = (seasonal_type_try if seasonal_type_try is not None else "none", m0, s0, ma0, r0)
+                    best_ets_config = (seasonal_type_try, m0, s0, ma0, r0)
                     pv = pv_try
             except Exception:
                 continue
+        # Final non-seasonal fallback only if no candidate succeeded
+        if best_ets_config is None:
+            try:
+                model = ExponentialSmoothing(train, trend="add", seasonal=None).fit()
+                pv_try = model.forecast(len(val))
+                m0, s0, ma0, r0 = calculate_validation_metrics(val, pv_try, train)
+                best_ets_config = ("none", m0, s0, ma0, r0)
+                pv = pv_try
+            except Exception:
+                pass
         if best_ets_config is None or pv is None:
             raise RuntimeError("ETS fitting failed for all seasonal types")
-        # Fit final model on full series using the chosen seasonal type
+        # Fit final model on full series to keep parity across models
         seasonal_type = best_ets_config[0]
         if seasonal_type == "none":
             ets_final = ExponentialSmoothing(series, trend="add", seasonal=None).fit()
         else:
             ets_final = ExponentialSmoothing(series, trend="add", seasonal=seasonal_type, seasonal_periods=12).fit()
+        # Forecast from capped-fit model by rolling forward
         pf = ets_final.forecast(len(future_idx))
-        # Record metrics
-        mapes["ETS"].append(best_ets_config[1])
+        # Record metrics - will be updated after backtesting if available
+        initial_mape = best_ets_config[1]
+        mapes["ETS"].append(initial_mape)
         smapes["ETS"].append(best_ets_config[2])
         mases["ETS"].append(best_ets_config[3])
         rmses["ETS"].append(best_ets_config[4])
@@ -1058,54 +1263,64 @@ def _run_ets_model(product, series, train, val, future_idx, act_df, results, map
                         backtest_months=backtest_months,
                         backtest_gap=backtest_gap,
                         validation_horizon=validation_horizon,
-                        fiscal_year_start_month=fiscal_year_start_month
+                        fiscal_year_start_month=fiscal_year_start_month,
+                        enable_enhanced_rolling=enable_enhanced_rolling,
+                        min_train_size=min_train_size,
+                        max_train_size=max_train_size,
+                        recency_alpha=recency_alpha
                     )
-                    # Expanding-window CV summary for selection
-                    try:
-                        cv = walk_forward_validation(
-                            series=series,
-                            model_fitting_func=ets_fitting_func,
-                            window_size=24,
-                            step_size=validation_horizon,
-                            horizon=validation_horizon,
-                            model_params={},
-                            diagnostic_messages=diagnostic_messages,
-                            gap=backtest_gap
-                        )
-                        bt_dict = validation_results.get('backtesting_validation', {}) or {}
-                        if cv:
-                            bt_dict.update({
-                                'success': True,
-                                'mape': cv.get('mean_mape'),
-                                'p75_mape': cv.get('p75_mape'),
-                                'p95_mape': cv.get('p95_mape'),
-                                'mase': cv.get('mean_mase'),
-                                'folds': cv.get('iterations'),
-                                'backtest_period': backtest_months,
-                                'validation_horizon': validation_horizon
-                            })
-                        else:
-                            bt_dict.update({
-                                'success': False,
-                                'error': 'insufficient data for CV',
-                                'folds': 0,
-                                'backtest_period': backtest_months,
-                                'validation_horizon': validation_horizon
-                            })
-                        validation_results['backtesting_validation'] = bt_dict
-                    except Exception as e:
-                        bt_dict = validation_results.get('backtesting_validation', {}) or {}
-                        bt_dict.update({
-                            'success': False,
-                            'error': str(e)[:100],
-                            'folds': 0,
-                            'backtest_period': backtest_months,
-                            'validation_horizon': validation_horizon
-                        })
-                        validation_results['backtesting_validation'] = bt_dict
+                    # Expanding-window CV summary for selection (optional, slower)
+                    if enable_expanding_cv:
+                        try:
+                            cv = walk_forward_validation(
+                                series=series,
+                                model_fitting_func=ets_fitting_func,
+                                window_size=TRAIN_WINDOW_MONTHS,
+                                step_size=validation_horizon,
+                                horizon=validation_horizon,
+                                model_params={},
+                                diagnostic_messages=diagnostic_messages,
+                                gap=backtest_gap
+                            )
+                            bt_dict = validation_results.get('backtesting_validation', {}) or {}
+                            if cv:
+                                fold_wapes = cv.get('wapes_by_fold') or cv.get('mape_scores')
+                                if fold_wapes:
+                                    alpha = 0.6
+                                    w = alpha ** np.arange(len(fold_wapes) - 1, -1, -1)
+                                    w = w / w.sum()
+                                    bt_dict['recent_weighted_wape'] = float(np.dot(fold_wapes, w))
+                                bt_dict.update({
+                                    'cv_success': True,
+                                    'wape': cv.get('mean_wape', cv.get('mean_mape')),
+                                    'p75_wape': cv.get('p75_wape', cv.get('p75_mape')),
+                                    'p95_wape': cv.get('p95_wape', cv.get('p95_mape')),
+                                    'mase': cv.get('mean_mase'),
+                                    'folds': cv.get('folds', cv.get('iterations')),
+                                    'backtest_period': backtest_months,
+                                    'validation_horizon': validation_horizon
+                                })
+                                diagnostic_messages.append(
+                                    f"CV[ETS] folds={bt_dict['folds']} wape={bt_dict.get('wape', float('nan')):.3f} p75={bt_dict.get('p75_wape', float('nan')):.3f} rw_wape={bt_dict.get('recent_weighted_wape', np.nan):.3f}")
+                            else:
+                                bt_dict.update({'cv_success': False, 'cv_error': 'insufficient data for CV', 'folds': 0})
+                            validation_results['backtesting_validation'] = bt_dict
+                        except Exception as e:
+                            bt_dict = validation_results.get('backtesting_validation', {}) or {}
+                            bt_dict.update({'cv_success': False, 'cv_error': str(e)[:100], 'folds': 0})
+                            validation_results['backtesting_validation'] = bt_dict
                     if product not in backtesting_results:
                         backtesting_results[product] = {}
                     backtesting_results[product]["ETS"] = validation_results
+                    
+                    # Update ETS metrics with enhanced rolling validation WAPE if available
+                    bt_results = validation_results.get('backtesting_validation', {})
+                    enhanced_wape = bt_results.get('recent_weighted_wape', bt_results.get('wape', bt_results.get('mape')))
+                    if enhanced_wape is not None and len(mapes["ETS"]) > 0:
+                        # Replace the last appended metric with enhanced rolling validation result
+                        mapes["ETS"][-1] = enhanced_wape
+                        diagnostic_messages.append(f"🔄 **ETS Metrics Updated**: {product} - Using enhanced rolling validation WAPE: {enhanced_wape:.1%}")
+                    
                     diagnostic_messages.append(f"✅ **ETS Backtesting**: Successfully completed backtesting for {product}")
             except Exception as e:
                 error_msg = str(e)[:100]  # Get more of the error message
@@ -1129,7 +1344,14 @@ def _run_ets_model(product, series, train, val, future_idx, act_df, results, map
         diagnostic_messages.append(f"❌ ETS Product {product}: {str(e)[:50]}")
         _add_failed_metrics("ETS", mapes, smapes, mases, rmses)
     done += 1
-    prog.progress(min(done / total, 1.0), text=f"Running ETS on Product {product} ({done}/{total})")
+    elapsed = max(1e-6, time.time() - PIPELINE_START_TIME)
+    avg_per = elapsed / max(1, done)
+    remaining = int(avg_per * max(0, total - done))
+    prog.progress(min(done / total, 1.0), text=f"Running ETS on Product {product} ({done}/{total}) — ETA {_format_eta(remaining)}")
+    try:
+        eta_ph.markdown(f"⏳ ETA: {_format_eta(remaining)}")
+    except Exception:
+        pass
     return done
 
 
@@ -1137,7 +1359,7 @@ def _run_polynomial_model(product, series, train, val, future_idx, act_df, resul
                          diagnostic_messages, degree, apply_business_adjustments,
                          business_growth_assumption, market_multiplier,
                          enable_backtesting,
-                         backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total):
+                         backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv):
     """Run polynomial regression model for a product."""
     model_name = f"Poly-{degree}"
     
@@ -1158,7 +1380,14 @@ def _run_polynomial_model(product, series, train, val, future_idx, act_df, resul
         val_mape, val_smape, val_mase, val_rmse = calculate_validation_metrics(val, pv, train)
         
         if val_mape < 2.0:  # Only proceed if reasonable validation performance
-            mapes[model_name].append(val_mape)
+            # Use enhanced rolling validation WAPE if available, otherwise fall back to basic validation
+            enhanced_wape = None
+            if backtesting_results.get(product, {}).get(model_name, {}).get('backtesting_validation'):
+                bt_results = backtesting_results[product][model_name]['backtesting_validation']
+                enhanced_wape = bt_results.get('recent_weighted_wape', bt_results.get('wape', bt_results.get('mape')))
+            
+            final_mape = enhanced_wape if enhanced_wape is not None else val_mape
+            mapes[model_name].append(final_mape)
             smapes[model_name].append(val_smape)
             mases[model_name].append(val_mase)
             rmses[model_name].append(val_rmse)
@@ -1213,6 +1442,42 @@ def _run_polynomial_model(product, series, train, val, future_idx, act_df, resul
                             validation_horizon=validation_horizon,
                             fiscal_year_start_month=fiscal_year_start_month
                         )
+                        # Recent-focused CV aggregation (TRAIN_WINDOW_MONTHS)
+                        if enable_expanding_cv:
+                            try:
+                                cv = walk_forward_validation(
+                                    series=series,
+                                    model_fitting_func=poly_fit_fn,
+                                    window_size=TRAIN_WINDOW_MONTHS,
+                                    step_size=validation_horizon,
+                                    horizon=validation_horizon,
+                                    model_params={},
+                                    diagnostic_messages=diagnostic_messages,
+                                    gap=backtest_gap
+                                )
+                                bt_dict = validation_results.get('backtesting_validation', {}) or {}
+                                if cv:
+                                    fold_wapes = cv.get('wapes_by_fold') or cv.get('mape_scores')
+                                    if fold_wapes:
+                                        alpha = 0.6
+                                        w = alpha ** np.arange(len(fold_wapes) - 1, -1, -1)
+                                        w = w / w.sum()
+                                        bt_dict['recent_weighted_wape'] = float(np.dot(fold_wapes, w))
+                                    bt_dict.update({
+                                        'success': True,
+                                        'wape': cv.get('mean_wape', cv.get('mean_mape')),
+                                        'p75_wape': cv.get('p75_wape', cv.get('p75_mape')),
+                                        'p95_wape': cv.get('p95_wape', cv.get('p95_mape')),
+                                        'mase': cv.get('mean_mase'),
+                                        'folds': cv.get('folds', cv.get('iterations')),
+                                        'backtest_period': backtest_months,
+                                        'validation_horizon': validation_horizon
+                                    })
+                                    diagnostic_messages.append(
+                                        f"CV[{model_name}] folds={bt_dict['folds']} wape={bt_dict.get('wape', float('nan')):.3f} p75={bt_dict.get('p75_wape', float('nan')):.3f} rw_wape={bt_dict.get('recent_weighted_wape', np.nan):.3f}")
+                                validation_results['backtesting_validation'] = bt_dict
+                            except Exception:
+                                pass
                         if product not in backtesting_results:
                             backtesting_results[product] = {}
                         backtesting_results[product][model_name] = validation_results
@@ -1232,7 +1497,14 @@ def _run_polynomial_model(product, series, train, val, future_idx, act_df, resul
         _add_failed_metrics(model_name, mapes, smapes, mases, rmses)
     
     done += 1
-    prog.progress(min(done / total, 1.0), text=f"Running {model_name} on Product {product} ({done}/{total})")
+    elapsed = max(1e-6, time.time() - PIPELINE_START_TIME)
+    avg_per = elapsed / max(1, done)
+    remaining = int(avg_per * max(0, total - done))
+    prog.progress(min(done / total, 1.0), text=f"Running {model_name} on Product {product} ({done}/{total}) — ETA {_format_eta(remaining)}")
+    try:
+        eta_ph.markdown(f"⏳ ETA: {_format_eta(remaining)}")
+    except Exception:
+        pass
     return done
 
 
@@ -1240,7 +1512,7 @@ def _run_prophet_model(product, series, train, val, future_idx, act_df, results,
                       diagnostic_messages, enable_prophet_holidays, enable_statistical_validation,
                       apply_business_adjustments, business_growth_assumption, market_multiplier,
                       enable_backtesting,
-                      backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total):
+                      backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv):
     """Run Prophet model for a product."""
     try:
         # Setup holidays if enabled
@@ -1282,7 +1554,10 @@ def _run_prophet_model(product, series, train, val, future_idx, act_df, results,
         pv = val_forecast['yhat'].values
         
         val_mape, val_smape, val_mase, val_rmse = calculate_validation_metrics(val, pv, train)
-        mapes["Prophet"].append(val_mape)
+        
+        # Store initial metrics (will be updated after backtesting if available)
+        initial_mape = val_mape
+        mapes["Prophet"].append(initial_mape)
         smapes["Prophet"].append(val_smape)
         mases["Prophet"].append(val_mase)
         rmses["Prophet"].append(val_rmse)
@@ -1344,47 +1619,56 @@ def _run_prophet_model(product, series, train, val, future_idx, act_df, results,
                     if product not in backtesting_results:
                         backtesting_results[product] = {}
                     backtesting_results[product]["Prophet"] = validation_results
+                    
+                    # Update Prophet metrics with enhanced rolling validation WAPE if available
+                    bt_results = validation_results.get('backtesting_validation', {})
+                    enhanced_wape = bt_results.get('recent_weighted_wape', bt_results.get('wape', bt_results.get('mape')))
+                    if enhanced_wape is not None and len(mapes["Prophet"]) > 0:
+                        # Replace the last appended metric with enhanced rolling validation result
+                        mapes["Prophet"][-1] = enhanced_wape
+                        diagnostic_messages.append(f"🔄 **Prophet Metrics Updated**: {product} - Using enhanced rolling validation WAPE: {enhanced_wape:.1%}")
+                    
                     diagnostic_messages.append(f"✅ **Prophet Backtesting**: Successfully completed backtesting for {product}")
-                    # Add expanding-window CV summary for selection
-                    try:
-                        prophet_fit_fn_cv = create_prophet_fitting_function(enable_holidays=bool(holidays_df is not None))
-                        cv = walk_forward_validation(
-                            series=series,
-                            model_fitting_func=prophet_fit_fn_cv,
-                            window_size=24,
-                            step_size=validation_horizon,
-                            horizon=validation_horizon,
-                            model_params={},
-                            diagnostic_messages=diagnostic_messages,
-                            gap=backtest_gap
-                        )
-                        if cv:
-                            backtesting_results[product]["Prophet"]["backtesting_validation"] = {
-                                'success': True,
-                                'mape': cv.get('mean_mape'),
-                                'p75_mape': cv.get('p75_mape'),
-                                'p95_mape': cv.get('p95_mape'),
-                                'mase': cv.get('mean_mase'),
-                                'folds': cv.get('iterations'),
-                                'backtest_period': backtest_months,
-                                'validation_horizon': validation_horizon
-                            }
-                        else:
-                            backtesting_results[product]["Prophet"]["backtesting_validation"] = {
-                                'success': False,
-                                'error': 'insufficient data for CV',
-                                'folds': 0,
-                                'backtest_period': backtest_months,
-                                'validation_horizon': validation_horizon
-                            }
-                    except Exception as e:
-                        backtesting_results[product]["Prophet"]["backtesting_validation"] = {
-                            'success': False,
-                            'error': str(e)[:100],
-                            'folds': 0,
-                            'backtest_period': backtest_months,
-                            'validation_horizon': validation_horizon
-                        }
+                    # Add expanding-window CV summary for selection without overwriting enhanced metrics
+                    if enable_expanding_cv:
+                        try:
+                            prophet_fit_fn_cv = create_prophet_fitting_function(enable_holidays=bool(holidays_df is not None))
+                            cv = walk_forward_validation(
+                                series=series,
+                                model_fitting_func=prophet_fit_fn_cv,
+                                window_size=TRAIN_WINDOW_MONTHS,
+                                step_size=validation_horizon,
+                                horizon=validation_horizon,
+                                model_params={},
+                                diagnostic_messages=diagnostic_messages,
+                                gap=backtest_gap
+                            )
+                            bt_dict = backtesting_results[product]["Prophet"].get("backtesting_validation", {}) or {}
+                            if cv:
+                                # Merge CV stats under distinct keys; keep recent_weighted_wape intact if present
+                                bt_dict.update({
+                                    'cv_success': True,
+                                    'cv_mean_wape': cv.get('mean_mape'),
+                                    'cv_p75_wape': cv.get('p75_mape'),
+                                    'cv_p95_wape': cv.get('p95_mape'),
+                                    'cv_mean_mase': cv.get('mean_mase'),
+                                    'cv_folds': cv.get('iterations')
+                                })
+                            else:
+                                bt_dict.update({
+                                    'cv_success': False,
+                                    'cv_error': 'insufficient data for CV',
+                                    'cv_folds': 0
+                                })
+                            backtesting_results[product]["Prophet"]["backtesting_validation"] = bt_dict
+                        except Exception as e:
+                            bt_dict = backtesting_results[product]["Prophet"].get("backtesting_validation", {}) or {}
+                            bt_dict.update({
+                                'cv_success': False,
+                                'cv_error': str(e)[:100],
+                                'cv_folds': 0
+                            })
+                            backtesting_results[product]["Prophet"]["backtesting_validation"] = bt_dict
             except Exception as e:
                 error_msg = str(e)[:100]  # Get more of the error message
                 if "prophet not available" in error_msg.lower():
@@ -1402,7 +1686,14 @@ def _run_prophet_model(product, series, train, val, future_idx, act_df, results,
         _add_failed_metrics("Prophet", mapes, smapes, mases, rmses)
     
     done += 1
-    prog.progress(min(done / total, 1.0), text=f"Running Prophet on Product {product} ({done}/{total})")
+    elapsed = max(1e-6, time.time() - PIPELINE_START_TIME)
+    avg_per = elapsed / max(1, done)
+    remaining = int(avg_per * max(0, total - done))
+    prog.progress(min(done / total, 1.0), text=f"Running Prophet on Product {product} ({done}/{total}) — ETA {_format_eta(remaining)}")
+    try:
+        eta_ph.markdown(f"⏳ ETA: {_format_eta(remaining)}")
+    except Exception:
+        pass
     return done
 
 
@@ -1410,7 +1701,7 @@ def _run_auto_arima_model(product, series, train, val, future_idx, act_df, resul
                          diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
                          business_growth_assumption, market_multiplier,
                          enable_backtesting,
-                         backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total):
+                         backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv):
     """Run Auto-ARIMA model for a product."""
     try:
         # Check if auto_arima is available
@@ -1422,23 +1713,54 @@ def _run_auto_arima_model(product, series, train, val, future_idx, act_df, resul
         # Get auto_arima function
         auto_arima_func = auto_arima
 
-        # Fit model on training window
-        auto_model = auto_arima_func(
-            train,
-            seasonal=True,
-            m=12,
-            max_p=3, max_d=2, max_q=3,
-            max_P=2, max_D=1, max_Q=2,
-            stepwise=True,
-            suppress_warnings=True,
-            error_action='ignore',
-            trace=False
-        )
+        # Robust auto_arima fitting with graceful fallbacks for short samples
+        def _fit_auto_arima_with_fallbacks(train_data):
+            last_err = None
+            configs = [
+                {"seasonal": True,  "m": 12, "max_D": 1, "max_d": 2},
+                {"seasonal": True,  "m": 12, "max_D": 0, "max_d": 2},
+                {"seasonal": False, "m": 1,  "max_D": 0, "max_d": 2},
+            ]
+            for cfg in configs:
+                try:
+                    mdl = auto_arima_func(
+                        train_data,
+                        seasonal=cfg["seasonal"],
+                        m=cfg["m"],
+                        max_p=3, max_d=cfg["max_d"], max_q=3,
+                        max_P=2, max_D=cfg["max_D"], max_Q=2,
+                        start_p=0, start_q=0, start_P=0, start_Q=0,
+                        stepwise=True,
+                        suppress_warnings=True,
+                        error_action='ignore',
+                        trace=False
+                    )
+                    return mdl, cfg
+                except Exception as e:
+                    last_err = e
+                    continue
+            raise last_err if last_err is not None else RuntimeError("auto_arima failed with unknown error")
+
+        auto_model, used_cfg = _fit_auto_arima_with_fallbacks(train)
+        try:
+            diagnostic_messages.append(
+                f"🛠️ Auto-ARIMA config: seasonal={used_cfg['seasonal']}, m={used_cfg['m']}, max_D={used_cfg['max_D']}"
+            )
+        except Exception:
+            pass
 
         # Validate on holdout
         pv = auto_model.predict(len(val))
         val_mape, val_smape, val_mase, val_rmse = calculate_validation_metrics(val, pv, train)
-        mapes["Auto-ARIMA"].append(val_mape)
+        
+        # Use enhanced rolling validation WAPE if available, otherwise fall back to basic validation
+        enhanced_wape = None
+        if backtesting_results.get(product, {}).get("Auto-ARIMA", {}).get('backtesting_validation'):
+            bt_results = backtesting_results[product]["Auto-ARIMA"]['backtesting_validation']
+            enhanced_wape = bt_results.get('recent_weighted_wape', bt_results.get('wape', bt_results.get('mape')))
+        
+        final_mape = enhanced_wape if enhanced_wape is not None else val_mape
+        mapes["Auto-ARIMA"].append(final_mape)
         smapes["Auto-ARIMA"].append(val_smape)
         mases["Auto-ARIMA"].append(val_mase)
         rmses["Auto-ARIMA"].append(val_rmse)
@@ -1505,46 +1827,43 @@ def _run_auto_arima_model(product, series, train, val, future_idx, act_df, resul
                         backtesting_results[product] = {}
                     backtesting_results[product]["Auto-ARIMA"] = validation_results
                     diagnostic_messages.append(f"✅ **Auto-ARIMA Backtesting**: Successfully completed backtesting for {product}")
-                    # Add expanding-window CV summary for selection
-                    try:
-                        aa_fit_fn_cv = create_auto_arima_fitting_function()
-                        cv = walk_forward_validation(
-                            series=series,
-                            model_fitting_func=aa_fit_fn_cv,
-                            window_size=24,
-                            step_size=validation_horizon,
-                            horizon=validation_horizon,
-                            model_params={},
-                            diagnostic_messages=diagnostic_messages,
-                            gap=backtest_gap
-                        )
-                        if cv:
-                            backtesting_results[product]["Auto-ARIMA"]["backtesting_validation"] = {
-                                'success': True,
-                                'mape': cv.get('mean_mape'),
-                                'p75_mape': cv.get('p75_mape'),
-                                'p95_mape': cv.get('p95_mape'),
-                                'mase': cv.get('mean_mase'),
-                                'folds': cv.get('iterations'),
-                                'backtest_period': backtest_months,
-                                'validation_horizon': validation_horizon
-                            }
-                        else:
-                            backtesting_results[product]["Auto-ARIMA"]["backtesting_validation"] = {
-                                'success': False,
-                                'error': 'insufficient data for CV',
-                                'folds': 0,
-                                'backtest_period': backtest_months,
-                                'validation_horizon': validation_horizon
-                            }
-                    except Exception as e:
-                        backtesting_results[product]["Auto-ARIMA"]["backtesting_validation"] = {
-                            'success': False,
-                            'error': str(e)[:100],
-                            'folds': 0,
-                            'backtest_period': backtest_months,
-                            'validation_horizon': validation_horizon
-                        }
+                    # Recent-focused CV summary for selection
+                    if enable_expanding_cv:
+                        try:
+                            aa_fit_fn_cv = create_auto_arima_fitting_function()
+                            cv = walk_forward_validation(
+                                series=series,
+                                model_fitting_func=aa_fit_fn_cv,
+                                window_size=TRAIN_WINDOW_MONTHS,
+                                step_size=validation_horizon,
+                                horizon=validation_horizon,
+                                model_params={},
+                                diagnostic_messages=diagnostic_messages,
+                                gap=backtest_gap
+                            )
+                            bt_dict = backtesting_results[product]["Auto-ARIMA"].get("backtesting_validation", {}) or {}
+                            if cv:
+                                fold_wapes = cv.get('wapes_by_fold') or cv.get('mape_scores')
+                                if fold_wapes:
+                                    alpha = 0.6
+                                    w = alpha ** np.arange(len(fold_wapes) - 1, -1, -1)
+                                    w = w / w.sum()
+                                    bt_dict['recent_weighted_wape'] = float(np.dot(fold_wapes, w))
+                                bt_dict.update({
+                                    'cv_success': True,
+                                    'wape': cv.get('mean_wape', cv.get('mean_mape')),
+                                    'p75_wape': cv.get('p75_wape', cv.get('p75_mape')),
+                                    'p95_wape': cv.get('p95_wape', cv.get('p95_mape')),
+                                    'mase': cv.get('mean_mase'),
+                                    'folds': cv.get('folds', cv.get('iterations')),
+                                    'backtest_period': backtest_months,
+                                    'validation_horizon': validation_horizon
+                                })
+                                diagnostic_messages.append(
+                                    f"CV[Auto-ARIMA] folds={bt_dict['folds']} wape={bt_dict.get('wape', float('nan')):.3f} p75={bt_dict.get('p75_wape', float('nan')):.3f} rw_wape={bt_dict.get('recent_weighted_wape', np.nan):.3f}")
+                            backtesting_results[product]["Auto-ARIMA"]["backtesting_validation"] = bt_dict
+                        except Exception:
+                            pass
             except Exception as e:
                 error_msg = str(e)[:100]  # Get more of the error message
                 diagnostic_messages.append(f"❌ **Auto-ARIMA Backtesting Failed**: {product} - Error: {error_msg}")
@@ -1557,7 +1876,14 @@ def _run_auto_arima_model(product, series, train, val, future_idx, act_df, resul
         _add_failed_metrics("Auto-ARIMA", mapes, smapes, mases, rmses)
 
     done += 1
-    prog.progress(min(done / total, 1.0), text=f"Running Auto-ARIMA on Product {product} ({done}/{total})")
+    elapsed = max(1e-6, time.time() - PIPELINE_START_TIME)
+    avg_per = elapsed / max(1, done)
+    remaining = int(avg_per * max(0, total - done))
+    prog.progress(min(done / total, 1.0), text=f"Running Auto-ARIMA on Product {product} ({done}/{total}) — ETA {_format_eta(remaining)}")
+    try:
+        eta_ph.markdown(f"⏳ ETA: {_format_eta(remaining)}")
+    except Exception:
+        pass
     return done
 
 
@@ -1565,7 +1891,8 @@ def _run_lightgbm_model(product, series, train, val, future_idx, act_df, results
                        diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
                        business_growth_assumption, market_multiplier,
                        enable_backtesting,
-                       backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, done, total):
+                       backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total,
+                       enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha):
     """Run LightGBM model for a product."""
     try:
         # Leak-safe LightGBM fitting (uses new signature)
@@ -1575,7 +1902,14 @@ def _run_lightgbm_model(product, series, train, val, future_idx, act_df, results
         if best_lgbm is None or not np.isfinite(best_mape):
             _add_failed_metrics("LightGBM", mapes, smapes, mases, rmses)
         else:
-            mapes["LightGBM"].append(best_mape)
+            # Use enhanced rolling validation WAPE if available, otherwise fall back to basic validation
+            enhanced_wape = None
+            if backtesting_results.get(product, {}).get("LightGBM", {}).get('backtesting_validation'):
+                bt_results = backtesting_results[product]["LightGBM"]['backtesting_validation']
+                enhanced_wape = bt_results.get('recent_weighted_wape', bt_results.get('wape', bt_results.get('mape')))
+            
+            final_mape = enhanced_wape if enhanced_wape is not None else best_mape
+            mapes["LightGBM"].append(final_mape)
             smapes["LightGBM"].append(best_smape)
             mases["LightGBM"].append(best_mase)
             rmses["LightGBM"].append(best_rmse)
@@ -1647,27 +1981,38 @@ def _run_lightgbm_model(product, series, train, val, future_idx, act_df, results
                                 diagnostic_messages.append(f"⚠️ **LightGBM Backtesting Skipped**: {product} - Insufficient data for {backtest_months} month backtesting (need {required_months} months, have {len(series)})")
                             else:
                                 diagnostic_messages.append(f"🧪 **LightGBM Backtesting**: Starting backtesting for {product} with {backtest_months} months validation period")
-                                # Simple fitting function reusing leak-safe approach for backtests
-                                def lgbm_fit_fn(train_ts, **kwargs):
-                                    return fit_best_lightgbm(train_ts.iloc[:-12], train_ts.iloc[-12:], None)[0] if len(train_ts) > 24 else None
+                                # Use dedicated LightGBM fitting function so enhanced rolling can evaluate folds
+                                lgbm_fit_fn = create_lightgbm_fitting_function()
                                 validation_results = comprehensive_validation_suite(
                                     actual=val.values,
                                     forecast=val_forecast,
                                     dates=val.index,
                                     product_name=product,
-                                    # Simple backtesting only
                                     series=series,
-                                    model_fitting_func=None,  # For advanced we already have robust metrics; avoid recursion
+                                    model_fitting_func=lgbm_fit_fn,
                                     model_params={},
                                     diagnostic_messages=diagnostic_messages,
                                     backtest_months=backtest_months,
                                     backtest_gap=backtest_gap,
                                     validation_horizon=validation_horizon,
-                                    fiscal_year_start_month=fiscal_year_start_month
+                                    fiscal_year_start_month=fiscal_year_start_month,
+                                    enable_enhanced_rolling=enable_enhanced_rolling,
+                                    min_train_size=min_train_size,
+                                    max_train_size=max_train_size,
+                                    recency_alpha=recency_alpha
                                 )
                                 if product not in backtesting_results:
                                     backtesting_results[product] = {}
                                 backtesting_results[product]["LightGBM"] = validation_results
+                                # Update LightGBM metrics with enhanced rolling validation WAPE if available
+                                try:
+                                    bt_results = validation_results.get('backtesting_validation', {})
+                                    enhanced_wape = bt_results.get('recent_weighted_wape', bt_results.get('wape', bt_results.get('mape')))
+                                except Exception:
+                                    enhanced_wape = None
+                                if enhanced_wape is not None and len(mapes["LightGBM"]) > 0:
+                                    mapes["LightGBM"][-1] = enhanced_wape
+                                    diagnostic_messages.append(f"🔄 **LightGBM Metrics Updated**: {product} - Using enhanced rolling validation WAPE: {enhanced_wape:.1%}")
                                 diagnostic_messages.append(f"✅ **LightGBM Backtesting**: Successfully completed backtesting for {product}")
                         except Exception as e:
                             error_msg = str(e)[:100]  # Get more of the error message
@@ -1683,7 +2028,14 @@ def _run_lightgbm_model(product, series, train, val, future_idx, act_df, results
         _add_failed_metrics("LightGBM", mapes, smapes, mases, rmses)
     
     done += 1
-    prog.progress(min(done / total, 1.0), text=f"Running LightGBM on Product {product} ({done}/{total})")
+    elapsed = max(1e-6, time.time() - PIPELINE_START_TIME)
+    avg_per = elapsed / max(1, done)
+    remaining = int(avg_per * max(0, total - done))
+    prog.progress(min(done / total, 1.0), text=f"Running LightGBM on Product {product} ({done}/{total}) — ETA {_format_eta(remaining)}")
+    try:
+        eta_ph.markdown(f"⏳ ETA: {_format_eta(remaining)}")
+    except Exception:
+        pass
     return done
 
 
@@ -1894,3 +2246,64 @@ def _create_hybrid_model(results, best_models_per_product, avg_mapes, best_mapes
         avg_mapes[model_key_name] = hybrid_avg_mape
     
     return results
+
+
+def _update_metrics_with_enhanced_validation(mapes, smapes, mases, rmses, backtesting_results, diagnostic_messages):
+    """
+    Update all model metrics with enhanced rolling validation WAPE after backtesting is complete.
+    
+    This function replaces the basic validation metrics with enhanced rolling validation metrics
+    for all models that have backtesting results available.
+    """
+    updated_models = []
+    
+    # Create a mapping of products to their index in the metrics arrays
+    # We need to reconstruct the processing order to map correctly
+    product_to_index = {}
+    
+    # Get products in processing order from backtesting_results keys
+    processed_products = list(backtesting_results.keys())
+    for i, product in enumerate(processed_products):
+        product_to_index[product] = i
+    
+    for product, models_data in backtesting_results.items():
+        if not isinstance(models_data, dict):
+            continue
+            
+        product_index = product_to_index.get(product)
+        if product_index is None:
+            continue
+            
+        for model_name, model_results in models_data.items():
+            if not isinstance(model_results, dict):
+                continue
+                
+            # Extract enhanced rolling validation WAPE
+            bt_validation = model_results.get('backtesting_validation', {})
+            if not isinstance(bt_validation, dict):
+                continue
+                
+            enhanced_wape = bt_validation.get('recent_weighted_wape')
+            if enhanced_wape is None:
+                enhanced_wape = bt_validation.get('wape')
+            if enhanced_wape is None:
+                enhanced_wape = bt_validation.get('mape')
+                
+            # Update metrics if enhanced WAPE is available and model exists in mapes
+            if enhanced_wape is not None and model_name in mapes:
+                if len(mapes[model_name]) > product_index:
+                    old_wape = mapes[model_name][product_index]
+                    mapes[model_name][product_index] = enhanced_wape
+                    
+                    model_key = f"{model_name} ({product})"
+                    if model_key not in updated_models:
+                        updated_models.append(model_key)
+                        
+                        diagnostic_messages.append(
+                            f"🔄 **Metrics Updated**: {model_name} ({product}) - Changed from {old_wape:.1%} (basic validation) to {enhanced_wape:.1%} (enhanced rolling validation)"
+                        )
+    
+    if updated_models:
+        diagnostic_messages.append(f"✅ **Enhanced Validation Applied**: Updated metrics for {len(updated_models)} model-product combinations")
+    else:
+        diagnostic_messages.append("ℹ️ **No Metric Updates**: No enhanced rolling validation results available for metric updates")

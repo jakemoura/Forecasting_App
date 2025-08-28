@@ -150,8 +150,8 @@ def render_model_guide_tab():
     st.markdown("""
     **🏆 Best per Product (Backtesting) - Recommended:**
     - **How it works:** Each product uses its individually best-performing model based on rigorous backtesting
-    - **Selection criteria:** Pure backtesting WAPE with strict eligibility requirements
-    - **Tie-breaking:** Mean WAPE → p75 WAPE → MASE → recent worst-month error
+    - **Selection criteria:** Backtesting WAPE with strict eligibility requirements
+    - **Tie-breaking:** Recency-weighted mean WAPE → p75 WAPE → MASE → trend improvement check
     - **Business-aware:** Polynomial models deprioritized for revenue forecasting
     - **Result:** Hybrid forecast combining the optimal model for each product
     
@@ -179,22 +179,21 @@ def render_model_guide_tab():
     5. **Multiple folds:** Creates multiple out-of-sample validation windows
     
     **✅ Strict Eligibility Criteria:**
-    - **History requirement:** ≥24 months of data for reliable backtesting
-    - **Minimum folds:** ≥2 backtesting windows for statistical significance
-    - **Stability check:** p95 WAPE ≤ 2× mean WAPE (excludes unstable models)
-    - **Baseline beating:** Must perform ≥5% better WAPE than Seasonal-Naive
-    - **MASE requirement:** MASE < 1.0 (better than seasonal baseline)
+    - **Sufficient history for folds:** Enough data to form **≥4 folds** under current config (≈30+ months typical)
+    - **Baseline beating:** **≥10% better WAPE than Seasonal‑Naive**
+    - **MASE requirement:** **MASE < 1.0** (LightGBM stricter: <0.8)
+    - **Stability check:** **p95 WAPE ≤ 2.25× mean** (≤2.5× with high fold‑consistency; stricter for LightGBM)
     
     **🎯 Selection Scoring (Backtesting Mode):**
-    1. **Primary:** Mean WAPE across all backtesting folds
-    2. **Tie-break 1:** p75 WAPE (75th percentile performance)
+    1. **Primary:** Recency‑weighted mean WAPE across folds (falls back to mean WAPE)
+    2. **Tie-break 1:** p75 WAPE (75th percentile)
     3. **Tie-break 2:** MASE (scaled error vs seasonal naive)
-    4. **Tie-break 3:** Recent worst-month error (recency bias)
+    4. **Tie-break 3:** Trend improvement check
     
     **🛡️ Business-Aware Safeguards:**
     - **Polynomial deprioritization:** Poly-2/Poly-3 models used only if no alternatives
     - **Revenue focus:** Optimized for consumptive business revenue patterns
-    - **Fallback logic:** Seasonal-Naive or ETS[A,A,A] when eligibility fails
+    - **Fallback logic:** If backtesting is insufficient, fall back to **Best per Product (Standard)**; Seasonal‑Naive remains the baseline option
     """)
     
     # Individual Models Section

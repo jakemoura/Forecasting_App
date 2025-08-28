@@ -101,7 +101,7 @@
 
       <h2>Model Selection Approaches</h2>
       <div class="infobox">
-        <p><strong>Best per Product (Backtesting) - Recommended:</strong> Uses rigorous walk-forward backtesting to select the best model for each product individually. Employs strict eligibility criteria (≥24 months history, ≥2 folds, stability checks) and business-aware safeguards. Shows WAPE from actual backtesting performance.</p>
+        <p><strong>Best per Product (Backtesting) - Recommended:</strong> Uses rigorous walk-forward backtesting to select the best model for each product individually. Employs strict eligibility criteria (enough history for ≥4 folds, stability checks) and business-aware safeguards. Shows recency‑weighted WAPE from actual backtesting performance.</p>
         <p><strong>Best per Product (Standard):</strong> Multi-metric ranking approach using validation data. Ranks models across WAPE, SMAPE, MASE, and RMSE, then selects best average rank per product. More robust to outliers, works with shorter history.</p>
         <p><strong>Individual Models:</strong> Choose a single model (SARIMA, ETS, Prophet, etc.) for all products. Useful when you want consistency or have domain expertise about which model works best for your business.</p>
       </div>
@@ -109,15 +109,15 @@
       <h2>Rigorous Backtesting Methodology</h2>
       <ul>
         <li><strong>Walk-forward validation:</strong> Expanding-window backtests with 6-month steps, creating multiple out-of-sample validation windows that mimic real forecasting scenarios.</li>
-        <li><strong>Strict eligibility:</strong> Requires ≥24 months history, ≥2 folds, MASE < 1.0, must beat Seasonal-Naive by ≥5% WAPE, and stability checks (p95 WAPE ≤ 2× mean).</li>
-        <li><strong>WAPE-first scoring:</strong> Primary ranking by mean WAPE, with tie-breaks using p75 WAPE → MASE → recent worst-month error.</li>
+        <li><strong>Strict eligibility:</strong> Requires enough history for ≥4 folds, MASE &lt; 1.0 (LightGBM &lt; 0.8), ≥10% better WAPE than Seasonal‑Naive, and stability checks (p95 WAPE ≤ 2.25× mean, up to 2.5× with high fold consistency).</li>
+        <li><strong>WAPE-first scoring:</strong> Primary ranking by recency‑weighted mean WAPE, with tie-breaks using p75 WAPE → MASE → trend‑improvement check.</li>
         <li><strong>Business-aware safeguards:</strong> Polynomial models deprioritized for revenue forecasting; fallback to Seasonal-Naive or ETS when eligibility fails.</li>
       </ul>
 
       <h3>Recommended settings</h3>
       <ul>
-        <li><strong>Backtesting parameters:</strong> Automatically optimized - Gap = <strong>0 months</strong>; Horizon = <strong>6 months</strong>; Step = <strong>6 months</strong>.</li>
-        <li><strong>Requirements:</strong> ≥24 months history for eligibility; automatically falls back to Standard with shorter history.</li>
+        <li><strong>Backtesting parameters:</strong> Automatically optimized - Gap = <strong>0 months</strong>; Horizon = <strong>3 months</strong> (quarterly validation); Backtest period = <strong>15 months</strong> for ~4–6 folds.</li>
+        <li><strong>Requirements:</strong> Typically requires ~30+ months for full backtesting; automatically falls back to Standard with shorter history.</li>
         <li><strong>No manual configuration needed:</strong> Parameters optimized for revenue forecasting scenarios.</li>
       </ul>
       <p class="small muted">Walk‑forward uses optimized parameters and needs roughly <strong>30+ months</strong> of history for best results. With less history, the app automatically falls back to Standard mode.</p>

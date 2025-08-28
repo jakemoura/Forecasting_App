@@ -133,7 +133,7 @@ def analyze_data_quality(raw_data):
                 "📊 Months": "Error",
                 "📅 Date Range": "Invalid data",
                 "🎯 Status": "🔴 Error",
-                "📈 Expected MAPE": "N/A",
+                "📈 Expected WAPE": "N/A",
                 "💡 Recommendation": f"Data error: {str(e)[:30]}..."
             })
             overall_status = "insufficient"
@@ -164,11 +164,11 @@ def _get_backtesting_recommendations(min_months, max_months, avg_months):
             'icon': '⚠️',
             'title': 'Limited Data',
             'description': f'Only {available_months} months available',
-            'recommended_range': f'6-{max_possible} months',
-            'default_value': min(6, max_possible),
-            'min_value': 6,
+            'recommended_range': f'Enhanced rolling: {min(12, max_possible)}-{max_possible} months',
+            'default_value': min(15, max_possible),
+            'min_value': min(12, max_possible),
             'max_value': max_possible,
-            'message': f'Consider uploading more data for robust validation. Use 6-{max_possible} months backtesting or rely on MAPE rankings.',
+            'message': f'Limited data for enhanced rolling validation. Use {min(12, max_possible)}-{max_possible} months with quarterly folds.',
             'confidence': 'low'
         }
     elif available_months < 24:
@@ -180,11 +180,11 @@ def _get_backtesting_recommendations(min_months, max_months, avg_months):
             'icon': '📊',
             'title': 'Moderate Data',
             'description': f'{available_months} months available',
-            'recommended_range': f'6-{safe_backtesting} months',
-            'default_value': min(12, safe_backtesting),
-            'min_value': 6,
+            'recommended_range': f'Enhanced rolling: 12-{safe_backtesting} months',
+            'default_value': 15,
+            'min_value': 12,
             'max_value': safe_backtesting,
-            'message': f'Good for focused validation. Use 6-{safe_backtesting} months backtesting for balanced validation.',
+            'message': f'Good for enhanced rolling validation. Use 12-{safe_backtesting} months with 4-6 quarterly folds.',
             'confidence': 'medium'
         }
     elif available_months < 48:
@@ -209,11 +209,11 @@ def _get_backtesting_recommendations(min_months, max_months, avg_months):
             'icon': '✅',
             'title': 'Good Data',
             'description': f'{available_months} months available',
-            'recommended_range': f'12-18 months',
-            'default_value': 12 if available_months == 36 else min(18, safe_backtesting),
+            'recommended_range': f'12-15 months (enhanced rolling)',
+            'default_value': 15,  # Changed from 12 to 15 for enhanced rolling
             'min_value': 12,
-            'max_value': min(18, safe_backtesting),
-            'message': 'Recency-biased validation recommended: 12–18 months.',
+            'max_value': 15,  # Changed from 18 to 15 for enhanced rolling
+            'message': 'Enhanced rolling validation recommended: 15 months with 4-6 quarterly folds.',
             'confidence': 'high'
         }
     else:
@@ -222,11 +222,11 @@ def _get_backtesting_recommendations(min_months, max_months, avg_months):
             'icon': '🎯',
             'title': 'Excellent Data',
             'description': f'{available_months}+ months available',
-            'recommended_range': '12-18 months',
-            'default_value': 18,
+            'recommended_range': '12-15 months (enhanced rolling)',
+            'default_value': 15,  # Changed from 18 to 15 for enhanced rolling
             'min_value': 12,
-            'max_value': 18,
-            'message': 'Recency-biased validation recommended: 12–18 months (default 18).',
+            'max_value': 15,  # Changed from 18 to 15 for enhanced rolling
+            'message': 'Enhanced rolling validation recommended: 15 months with 4-6 quarterly folds.',
             'confidence': 'very_high'
         }
 
