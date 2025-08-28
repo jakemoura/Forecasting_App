@@ -135,7 +135,7 @@ Forecaster App/
 
 ### **3. Configure Backtesting:**
 - Use the slider to set backtesting period  
-- Parameters automatically optimized (6-month horizon, 0-month gap)
+- Parameters automatically optimized (15-month backtest period, 3-month validation horizon, 0-month gap)
 - App handles validation configuration for best accuracy
 
 ### **4. Run Forecasts:**

@@ -173,10 +173,10 @@ def render_model_guide_tab():
     st.markdown("""
     **🔄 Walk-Forward Validation Process:**
     1. **Expanding windows:** Train on increasing historical data, predict forward
-    2. **Step size:** 6-month steps to capture multiple seasonal cycles  
+    2. **Backtest period:** Adjustable (default **15 months**, ~4–6 folds)
     3. **Gap handling:** 0-month gap by default (configurable for autocorrelation)
-    4. **Validation horizon:** 6-month forward predictions (mimics real forecasting)
-    5. **Multiple folds:** Creates multiple out-of-sample validation windows
+    4. **Validation horizon:** 3 months per fold (quarterly validation)
+    5. **Multiple folds:** Creates multiple out-of-sample validation windows with recency weighting
     
     **✅ Strict Eligibility Criteria:**
     - **Sufficient history for folds:** Enough data to form **≥4 folds** under current config (≈30+ months typical)

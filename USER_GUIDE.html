@@ -108,7 +108,7 @@
 
       <h2>Rigorous Backtesting Methodology</h2>
       <ul>
-        <li><strong>Walk-forward validation:</strong> Expanding-window backtests with 6-month steps, creating multiple out-of-sample validation windows that mimic real forecasting scenarios.</li>
+        <li><strong>Walk-forward validation:</strong> Expanding-window backtests over an <strong>adjustable backtest period</strong> (default <strong>15 months</strong>) with a <strong>3‑month validation horizon</strong> per fold (≈4–6 folds), creating multiple out-of-sample validation windows with recency weighting.</li>
         <li><strong>Strict eligibility:</strong> Requires enough history for ≥4 folds, MASE &lt; 1.0 (LightGBM &lt; 0.8), ≥10% better WAPE than Seasonal‑Naive, and stability checks (p95 WAPE ≤ 2.25× mean, up to 2.5× with high fold consistency).</li>
         <li><strong>WAPE-first scoring:</strong> Primary ranking by recency‑weighted mean WAPE, with tie-breaks using p75 WAPE → MASE → trend‑improvement check.</li>
         <li><strong>Business-aware safeguards:</strong> Polynomial models deprioritized for revenue forecasting; fallback to Seasonal-Naive or ETS when eligibility fails.</li>
