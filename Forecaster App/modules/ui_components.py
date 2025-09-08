@@ -23,6 +23,40 @@ def fy(ts):
     return f"FY{ts.year + (1 if ts.month >= 7 else 0)}"
 
 
+def fiscal_period_display(date, fiscal_year_start_month=7):
+    """
+    Convert date to fiscal period display format like 'P01 - July (FY2025)'.
+    Uses zero-padded periods (P01, P02, ..., P12) for proper Excel sorting.
+    
+    Args:
+        date: pandas Timestamp or datetime
+        fiscal_year_start_month: Month that starts the fiscal year (default: 7 for July)
+    
+    Returns:
+        String in format 'P01 - July (FY2025)'
+    """
+    if pd.isna(date):
+        return ""
+    
+    date = pd.Timestamp(date)
+    
+    # Calculate fiscal year and period
+    if date.month >= fiscal_year_start_month:
+        # Current calendar year fiscal year
+        fiscal_period = date.month - fiscal_year_start_month + 1
+        fiscal_year = date.year + 1  # FY starts in current year, named for next year
+    else:
+        # Next calendar year fiscal year (months 1-6 for July start)
+        fiscal_period = date.month + (12 - fiscal_year_start_month) + 1
+        fiscal_year = date.year  # FY started in previous year, named for current year
+    
+    # Get month name
+    month_name = date.strftime('%B')
+    
+    # Use zero-padded period number for proper Excel sorting (P01, P02, ..., P12)
+    return f"P{fiscal_period:02d} - {month_name} (FY{fiscal_year})"
+
+
 def display_advanced_validation_settings():
     """
     Display advanced validation settings in the sidebar using a simple master toggle
@@ -951,7 +985,21 @@ def create_download_excel(results_dict, selected_model, filename_base="forecast_
         raise ValueError(f"Model {selected_model} not found in results")
     
     # Get the data to download
-    download_data = results_dict[selected_model]
+    download_data = results_dict[selected_model].copy()
+    
+    # Add fiscal period column if Date column exists
+    if 'Date' in download_data.columns:
+        download_data['Fiscal_Period'] = download_data['Date'].apply(
+            lambda x: fiscal_period_display(x, fiscal_year_start_month=7)
+        )
+        
+        # Reorder columns to put Fiscal_Period after Date
+        cols = list(download_data.columns)
+        if 'Fiscal_Period' in cols:
+            cols.remove('Fiscal_Period')
+            date_idx = cols.index('Date') if 'Date' in cols else 0
+            cols.insert(date_idx + 1, 'Fiscal_Period')
+            download_data = download_data[cols]
     
     # Create Excel buffer
     buffer = io.BytesIO()
@@ -1882,9 +1930,25 @@ def display_forecast_results():
         if st.session_state.get('yearly_renewals_applied', False):
             st.success("📋 Download includes non-compliant Upfront RevRec data as separate line items!")
 
+        # Prepare download data with fiscal period column
+        download_data_with_fiscal = download_data.copy()
+        if 'Date' in download_data_with_fiscal.columns:
+            # Add fiscal period column
+            download_data_with_fiscal['Fiscal_Period'] = download_data_with_fiscal['Date'].apply(
+                lambda x: fiscal_period_display(x, fiscal_year_start_month=7)
+            )
+            
+            # Reorder columns to put Fiscal_Period after Date
+            cols = list(download_data_with_fiscal.columns)
+            if 'Fiscal_Period' in cols:
+                cols.remove('Fiscal_Period')
+                date_idx = cols.index('Date') if 'Date' in cols else 0
+                cols.insert(date_idx + 1, 'Fiscal_Period')
+                download_data_with_fiscal = download_data_with_fiscal[cols]
+
         buf2 = io.BytesIO()
         with pd.ExcelWriter(buf2, engine="openpyxl") as writer:
-            download_data.to_excel(writer, index=False, sheet_name="Actuals_Forecast")
+            download_data_with_fiscal.to_excel(writer, index=False, sheet_name="Actuals_Forecast")
         buf2.seek(0)
         today = datetime.today().strftime("%Y%m%d")
 
