@@ -113,13 +113,13 @@ def create_renewals_upload_section():
     """Create the non-compliant upfront RevRec upload section."""
     with st.sidebar.expander("📋 **Non-Compliant Upfront RevRec Upload**", expanded=False):
         st.markdown("**Non-Compliant Revenue Recognition**")
-        st.caption("Upload Excel file with non-compliant Upfront RevRec actuals to add as separate line items in historical data")
+        st.caption("Upload Excel file with non-compliant Upfront RevRec actuals to add as separate line items in historical data. Only renewals from the last 12 months will be projected forward to avoid over-forecasting from churned customers.")
         
         yearly_renewals_file = st.file_uploader(
             "Upload Non-Compliant Upfront RevRec Excel",
             type=["xls", "xlsx", "xlsb"],
             key="yearly_renewals_uploader",
-            help="Excel file with Date, Product, and ACR columns (same format as main data)"
+            help="Excel file with Date, Product, and ACR columns (same format as main data). Future renewals will only be projected from the most recent 12 months of data."
         )
         
         if yearly_renewals_file:

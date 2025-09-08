@@ -595,15 +595,27 @@ def display_product_forecast(data, product, model_name, best_models_per_product=
         chart = create_forecast_chart(product_data, product, actual_model, backtesting_chart_data)
         st.altair_chart(chart, use_container_width=True)
         
-        # Show backtesting legend if backtesting data is available
-        if backtesting_chart_data is not None and not backtesting_chart_data.empty:
-            st.info("""
+        # Show legend for chart elements
+        legend_text = """
             **📊 Chart Legend:**
             - 🔵 **Blue Line**: Historical actual data
             - 🟠 **Orange Dashed**: Future forecast
-            - 🟢 **Green Dashed**: Backtesting predictions (what the model predicted during validation)
+"""
+        # Add non-compliant legend entries if they exist
+        has_noncompliant_historical = any(product_data.get("Type", "").astype(str).str.contains("non-compliant", case=False, na=False))
+        has_noncompliant_forecast = any(product_data.get("Type", "").astype(str).str.contains("non-compliant-forecast", case=False, na=False))
+        
+        if has_noncompliant_historical:
+            legend_text += "            - � **Red Dotted**: Historical non-compliant rev rec renewals\n"
+        if has_noncompliant_forecast:
+            legend_text += "            - � **Dark Red Dashed**: Future non-compliant rev rec renewals\n"
+            
+        if backtesting_chart_data is not None and not backtesting_chart_data.empty:
+            legend_text += """            - 🟢 **Green Dashed**: Backtesting predictions (what the model predicted during validation)
             - 🟢 **Green Solid**: Backtesting actuals (real values during validation period)
-            """)
+"""
+        
+        st.info(legend_text)
             
     except Exception as e:
         st.error(f"❌ Chart generation failed: {str(e)}")
@@ -618,7 +630,36 @@ def display_product_forecast(data, product, model_name, best_models_per_product=
         total_forecast = forecast_data["ACR"].sum()
         avg_monthly = forecast_data["ACR"].mean()
         
-        col1, col2, col3 = st.columns(3)
+        # Calculate fiscal year forecast for this product
+        # Get fiscal year start month from config, session state, or default to July
+        fiscal_year_start_month = st.session_state.get('fiscal_year_start_month', 7)
+        if 'config' in st.session_state and st.session_state.config:
+            fiscal_year_start_month = int(st.session_state.config.get('fiscal_year_start_month', fiscal_year_start_month))
+        
+        # Calculate current fiscal year dates
+        now = datetime.now()
+        if now.month >= fiscal_year_start_month:
+            current_fy_year = now.year + 1
+        else:
+            current_fy_year = now.year
+        
+        fy_start_date = pd.Timestamp(year=current_fy_year - 1, month=fiscal_year_start_month, day=1)
+        fy_end_date = pd.Timestamp(year=current_fy_year, month=fiscal_year_start_month, day=1) - pd.DateOffset(days=1)
+        
+        # Filter product data for current fiscal year
+        fy_product_data = product_data[
+            (pd.to_datetime(product_data['Date']) >= fy_start_date) & 
+            (pd.to_datetime(product_data['Date']) <= fy_end_date)
+        ].copy()
+        
+        fy_total = 0
+        if not fy_product_data.empty:
+            fy_actuals = fy_product_data[fy_product_data['Type'].isin(['actual', 'history', 'historical'])]['ACR'].sum()
+            fy_forecast = fy_product_data[fy_product_data['Type'] == 'forecast']['ACR'].sum()
+            fy_noncompliant = fy_product_data[fy_product_data['Type'].isin(['non-compliant', 'non-compliant-forecast'])]['ACR'].sum()
+            fy_total = fy_actuals + fy_forecast + fy_noncompliant
+        
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("💰 Total Forecast", f"${total_forecast/1e6:.1f}M")
         with col2:
@@ -626,6 +667,13 @@ def display_product_forecast(data, product, model_name, best_models_per_product=
         with col3:
             months_count = len(forecast_data)
             st.metric("📅 Months", f"{months_count}")
+        with col4:
+            if fy_total > 0:
+                st.metric(f"🗓️ FY{current_fy_year}", f"${fy_total/1e6:.1f}M", 
+                         help=f"Complete fiscal year projection (actuals + forecast)")
+            else:
+                st.metric(f"🗓️ FY{current_fy_year}", "No Data", 
+                         help="No data available for current fiscal year")
 
 
 def prepare_backtesting_chart_data(backtesting_results, product_name, model_name):
@@ -722,10 +770,12 @@ def create_forecast_chart(data, product_name, model_name, backtesting_data=None)
     actual_mask = pd.Series(False, index=chart_data.index)
     forecast_mask = pd.Series(False, index=chart_data.index)
     noncomp_mask = pd.Series(False, index=chart_data.index)
+    noncomp_historical_mask = pd.Series(False, index=chart_data.index)
     if type_norm is not None:
         actual_mask |= type_norm.isin(['actual','history','historical'])
-        noncomp_mask |= type_norm.isin(['non-compliant-forecast','noncompliant-forecast','noncompliant'])
-        forecast_mask |= type_norm.isin(['forecast','future','fcst','prediction','predicted']) | noncomp_mask
+        noncomp_mask |= type_norm.isin(['non-compliant-forecast','noncompliant-forecast'])
+        noncomp_historical_mask |= type_norm.isin(['non-compliant','noncompliant'])
+        forecast_mask |= type_norm.isin(['forecast','future','fcst','prediction','predicted'])
     if not actual_mask.any() and not forecast_mask.any():
         # As a last resort, treat all rows as actual to avoid a blank chart
         actual_mask = pd.Series(True, index=chart_data.index)
@@ -738,6 +788,7 @@ def create_forecast_chart(data, product_name, model_name, backtesting_data=None)
     chart_data['is_actual'] = actual_mask
     chart_data['is_forecast'] = forecast_mask
     chart_data['is_noncompliant'] = noncomp_mask
+    chart_data['is_noncompliant_historical'] = noncomp_historical_mask
 
     base = alt.Chart(chart_data)
     
@@ -768,7 +819,7 @@ def create_forecast_chart(data, product_name, model_name, backtesting_data=None)
         tooltip=['Date:T', 'ACR:Q', 'Type:N']
     )
     
-    # Non-compliant forecast line (if exists)
+    # Non-compliant forecast line (future projected renewals)
     noncompliant = base.transform_filter(
         alt.datum.is_noncompliant
     ).mark_line(
@@ -782,8 +833,22 @@ def create_forecast_chart(data, product_name, model_name, backtesting_data=None)
         tooltip=['Date:T', 'ACR:Q', 'Type:N']
     )
     
+    # Non-compliant historical line (historical renewals)
+    noncompliant_historical = base.transform_filter(
+        alt.datum.is_noncompliant_historical
+    ).mark_line(
+        point=True,
+        color='red',
+        strokeWidth=2,
+        strokeDash=[1, 1]
+    ).encode(
+        x='Date:T',
+        y='ACR:Q',
+        tooltip=['Date:T', 'ACR:Q', 'Type:N']
+    )
+    
     # Initialize chart layers
-    chart_layers = [historical, forecast, noncompliant]
+    chart_layers = [historical, forecast, noncompliant, noncompliant_historical]
     
     # Add backtesting overlay if available (use a separate data source)
     if backtesting_data is not None and not backtesting_data.empty:
@@ -818,17 +883,11 @@ def create_forecast_chart(data, product_name, model_name, backtesting_data=None)
         chart_layers.extend([backtest_predictions, backtest_actuals])
     
     # If every layer ends up empty, fall back to a single line to avoid a blank panel
-    if not (chart_data['is_actual'].any() or chart_data['is_forecast'].any() or chart_data['is_noncompliant'].any()):
+    if not (chart_data['is_actual'].any() or chart_data['is_forecast'].any() or chart_data['is_noncompliant'].any() or chart_data['is_noncompliant_historical'].any()):
         fallback = base.mark_line(point=True, color='steelblue', strokeWidth=3).encode(
             x='Date:T', y='ACR:Q', tooltip=['Date:T','ACR:Q']
         )
         chart_layers = [fallback]
-
-    # Always include a raw line as a safety net so charts never render blank
-    raw_all = base.mark_line(point=True, color='steelblue', opacity=0.35, strokeWidth=2).encode(
-        x='Date:T', y='ACR:Q', tooltip=['Date:T','ACR:Q']
-    )
-    chart_layers.append(raw_all)
 
     # Combine all layers
     chart = alt.layer(*chart_layers).resolve_scale(
@@ -1467,7 +1526,7 @@ def display_forecast_results():
                 st.info(f"📈 WAPE: {chart_mape:.1f}%")
         else:
             # Fallback for models without WAPE data or infinite WAPE
-            if chart_model.startswith("Best per Product"):
+            if chart_model and chart_model.startswith("Best per Product"):
                 st.success("🏆 Best Model (Composite)")
             else:
                 st.info("📈 Model Selected")
@@ -1600,6 +1659,86 @@ def display_forecast_results():
     else:
         st.warning("⚠️ No forecast data available for the selected model")
 
+    # === FISCAL YEAR FORECAST SECTION ===
+    st.markdown("### 📅 **Current Fiscal Year Forecast**")
+    
+    # Get fiscal year start month from config, session state, or default to July
+    fiscal_year_start_month = st.session_state.get('fiscal_year_start_month', 7)
+    if 'config' in st.session_state and st.session_state.config:
+        fiscal_year_start_month = int(st.session_state.config.get('fiscal_year_start_month', fiscal_year_start_month))
+    
+    # Calculate current fiscal year
+    now = datetime.now()
+    if now.month >= fiscal_year_start_month:
+        current_fy_year = now.year + 1
+    else:
+        current_fy_year = now.year
+    
+    # Determine fiscal year date range
+    fy_start_date = pd.Timestamp(year=current_fy_year - 1, month=fiscal_year_start_month, day=1)
+    fy_end_date = pd.Timestamp(year=current_fy_year, month=fiscal_year_start_month, day=1) - pd.DateOffset(days=1)
+    
+    # Calculate fiscal year totals combining actuals + forecasts
+    fy_data = chart_model_data[
+        (pd.to_datetime(chart_model_data['Date']) >= fy_start_date) & 
+        (pd.to_datetime(chart_model_data['Date']) <= fy_end_date)
+    ].copy()
+    
+    if not fy_data.empty:
+        # Calculate totals by type for current fiscal year
+        fy_actuals = fy_data[fy_data['Type'].isin(['actual', 'history', 'historical'])]['ACR'].sum()
+        fy_forecast = fy_data[fy_data['Type'] == 'forecast']['ACR'].sum()
+        fy_noncompliant = fy_data[fy_data['Type'].isin(['non-compliant', 'non-compliant-forecast'])]['ACR'].sum()
+        fy_total = fy_actuals + fy_forecast + fy_noncompliant
+        
+        # Show fiscal year metrics
+        fy_col1, fy_col2, fy_col3, fy_col4 = st.columns(4)
+        
+        with fy_col1:
+            st.metric(
+                label=f"📈 FY{current_fy_year} Total",
+                value=f"${fy_total/1e6:.1f}M",
+                help=f"Complete fiscal year projection including actuals through current date"
+            )
+        
+        with fy_col2:
+            st.metric(
+                label="✅ Actuals YTD",
+                value=f"${fy_actuals/1e6:.1f}M",
+                help="Actual revenue captured so far this fiscal year"
+            )
+        
+        with fy_col3:
+            st.metric(
+                label="🔮 Remaining Forecast",
+                value=f"${fy_forecast/1e6:.1f}M",
+                help="Forecasted revenue for remaining months of fiscal year"
+            )
+        
+        with fy_col4:
+            if fy_noncompliant > 0:
+                st.metric(
+                    label="⚡ Non-Compliant",
+                    value=f"${fy_noncompliant/1e6:.1f}M",
+                    help="Non-compliant revenue recognition (historical + future)"
+                )
+            else:
+                st.metric(
+                    label="📊 Completion",
+                    value=f"{(fy_actuals/fy_total*100):.0f}%" if fy_total > 0 else "0%",
+                    help="Percentage of fiscal year completed based on actuals"
+                )
+        
+        # Show fiscal year period info
+        months_elapsed = max(0, (now.year - fy_start_date.year) * 12 + (now.month - fy_start_date.month))
+        months_remaining = 12 - months_elapsed
+        st.caption(
+            f"📅 FY{current_fy_year}: {fy_start_date.strftime('%b %Y')} - {fy_end_date.strftime('%b %Y')} | "
+            f"⏰ {months_elapsed} months elapsed, {months_remaining} months remaining"
+        )
+    else:
+        st.info(f"ℹ️ No data available for current fiscal year (FY{current_fy_year})")
+
     st.markdown("---")
 
     # Quick product selector (render only one chart at a time for stability/performance)
@@ -1611,108 +1750,108 @@ def display_forecast_results():
     st.markdown(f"### 📊 **{product}**")
     display_product_forecast(chart_model_data, product, chart_model, best_models_per_product, best_mapes_per_product)
 
-    # === GROWTH ANALYSIS (OPTIONAL) ===
-    with st.expander("📈 **Month-over-Month Growth Analysis**", expanded=False):
-        st.markdown(f"Growth trends for **{chart_model}** model")
+    # === GROWTH ANALYSIS (PROMINENT DISPLAY) ===
+    st.markdown("### 📈 **Month-over-Month Growth Analysis**")
+    st.markdown(f"Growth trends for **{chart_model}** model")
 
-        # Show adjustment info if applied
-        if st.session_state.get('product_adjustments_applied') and any(adj != 0 for adj in st.session_state.get('product_adjustments_applied', {}).values()):
-            st.info("📊 Growth charts reflect your custom product adjustments")
+    # Show adjustment info if applied
+    if st.session_state.get('product_adjustments_applied') and any(adj != 0 for adj in st.session_state.get('product_adjustments_applied', {}).values()):
+        st.info("📊 Growth charts reflect your custom product adjustments")
 
-        # Use the same selected product for growth analysis to avoid rendering many charts at once
-        product_mom = product
-        df_product_mom = chart_model_data[chart_model_data["Product"] == product_mom].copy()
-        dfm_growth = None  # Initialize to handle potential errors
+    # Use the same selected product for growth analysis to avoid rendering many charts at once
+    product_mom = product
+    df_product_mom = chart_model_data[chart_model_data["Product"] == product_mom].copy()
+    dfm_growth = None  # Initialize to handle potential errors
 
-        st.markdown(f"**📊 {product_mom}**")
+    st.markdown(f"**📊 {product_mom}**")
 
-        # Show adjustment info for this product if applied
-        if st.session_state.get('product_adjustments_applied') and product_mom in st.session_state.product_adjustments_applied:
-            adj_info = st.session_state.product_adjustments_applied[product_mom]
-            if isinstance(adj_info, dict):
-                adj_pct = adj_info.get('percentage', 0)
-                start_display = adj_info.get('start_display', 'Unknown')
-                if adj_pct != 0:
-                    if adj_pct > 0:
-                        st.markdown(f"*📈 +{adj_pct}% growth from {start_display}*")
-                    else:
-                        st.markdown(f"*📉 {adj_pct}% haircut from {start_display}*")
+    # Show adjustment info for this product if applied
+    if st.session_state.get('product_adjustments_applied') and product_mom in st.session_state.product_adjustments_applied:
+        adj_info = st.session_state.product_adjustments_applied[product_mom]
+        if isinstance(adj_info, dict):
+            adj_pct = adj_info.get('percentage', 0)
+            start_display = adj_info.get('start_display', 'Unknown')
+            if adj_pct != 0:
+                if adj_pct > 0:
+                    st.markdown(f"*📈 +{adj_pct}% growth from {start_display}*")
+                else:
+                    st.markdown(f"*📉 {adj_pct}% haircut from {start_display}*")
 
-            try:
-                df_product_mom = df_product_mom.set_index("Date")
-                # Build normalized MoM series including forecast
-                norm_mom = normalized_monthly_by_days(df_product_mom, "ACR")
-                mom_growth = norm_mom.pct_change().dropna()
+    try:
+        df_product_mom = df_product_mom.set_index("Date")
+        # Build normalized MoM series including forecast
+        norm_mom = normalized_monthly_by_days(df_product_mom, "ACR")
+        mom_growth = norm_mom.pct_change().dropna()
 
-                # Validate growth data
-                if len(mom_growth) == 0:
-                    st.warning(f"⚠️ Insufficient data for growth analysis: {product_mom}")
-                    dfm_growth = None
-                    raise ValueError("No MoM data")
+        # Validate growth data
+        if len(mom_growth) == 0:
+            st.warning(f"⚠️ Insufficient data for growth analysis: {product_mom}")
+            dfm_growth = None
+            raise ValueError("No MoM data")
 
-                dfm_growth = (
-                    mom_growth
-                    .rename("growth")              # series → column name
-                    .reset_index()                 # ['month','growth']
-                    .rename(columns={"month": "Date"})
-                )
+        dfm_growth = (
+            mom_growth
+            .rename("growth")              # series → column name
+            .reset_index()                 # ['month','growth']
+            .rename(columns={"month": "Date"})
+        )
 
-                # Validate growth dataframe
-                if len(dfm_growth) == 0 or dfm_growth['growth'].isna().all():
-                    st.warning(f"⚠️ No valid growth data for {product_mom}")
-                    dfm_growth = None
-                    raise ValueError("No valid growth data")
+        # Validate growth dataframe
+        if len(dfm_growth) == 0 or dfm_growth['growth'].isna().all():
+            st.warning(f"⚠️ No valid growth data for {product_mom}")
+            dfm_growth = None
+            raise ValueError("No valid growth data")
 
-                dfm_growth['growth_formatted'] = dfm_growth['growth'].apply(
-                    lambda x: f"{x:.1%}" if pd.notna(x) else "N/A"
-                )
+        dfm_growth['growth_formatted'] = dfm_growth['growth'].apply(
+            lambda x: f"{x:.1%}" if pd.notna(x) else "N/A"
+        )
 
-                # Base chart
-                base_mom = alt.Chart(dfm_growth)
+        # Base chart
+        base_mom = alt.Chart(dfm_growth)
 
-                # Line chart with improved styling
-                chart_mom_line = base_mom.mark_line(point=True, strokeWidth=2, stroke='#1f77b4').encode(
-                    x=alt.X("Date:T", title="Month"),
-                    y=alt.Y("growth:Q", axis=alt.Axis(format="%"), title="MoM Growth"),
-                    tooltip=["Date:T", alt.Tooltip("growth_formatted:N", title="Growth")]
-                )
+        # Line chart with improved styling
+        chart_mom_line = base_mom.mark_line(point=True, strokeWidth=2, stroke='#1f77b4').encode(
+            x=alt.X("Date:T", title="Month"),
+            y=alt.Y("growth:Q", axis=alt.Axis(format="%"), title="MoM Growth"),
+            tooltip=["Date:T", alt.Tooltip("growth_formatted:N", title="Growth")]
+        )
 
-                # Data labels for key points (show every other point to avoid clutter)
-                labels_mom = base_mom.transform_window(
-                    row_number='row_number()'
-                ).transform_filter(
-                    'datum.row_number % 2 == 1'  # Show every other point
-                ).mark_text(
-                    align='center',
-                    baseline='bottom',
-                    dy=-10,
-                    fontSize=9,
-                    fontWeight='bold',
-                    color='#1f77b4'
-                ).encode(
-                    x="Date:T",
-                    y="growth:Q",
-                    text=alt.Text("growth_formatted:N")
-                )
-                chart_mom = (chart_mom_line + labels_mom).properties(
-                    height=250,
-                    title=f"Month-over-Month Growth - {product_mom} ({chart_model} Model)"
-                )
-                st.altair_chart(chart_mom, use_container_width=True)
+        # Data labels for key points (show every other point to avoid clutter)
+        labels_mom = base_mom.transform_window(
+            row_number='row_number()'
+        ).transform_filter(
+            'datum.row_number % 2 == 1'  # Show every other point
+        ).mark_text(
+            align='center',
+            baseline='bottom',
+            dy=-10,
+            fontSize=9,
+            fontWeight='bold',
+            color='#1f77b4'
+        ).encode(
+            x="Date:T",
+            y="growth:Q",
+            text=alt.Text("growth_formatted:N")
+        )
+        chart_mom = (chart_mom_line + labels_mom).properties(
+            height=250,
+            title=f"Month-over-Month Growth - {product_mom} ({chart_model} Model)"
+        )
+        st.altair_chart(chart_mom, use_container_width=True)
 
-            except Exception as e:
-                st.error(f"❌ Growth chart failed for {product_mom}: {str(e)}")
-                st.info("📈 Showing growth data table instead:")
+    except Exception as e:
+        st.error(f"❌ Growth chart failed for {product_mom}: {str(e)}")
+        st.info("📈 Showing growth data table instead:")
 
-                # Fallback: show growth data table if it was created
-                try:
-                    # Check if dfm_growth was successfully created before the exception
-                    if dfm_growth is not None and len(dfm_growth) > 0:
-                        st.dataframe(dfm_growth[['Date', 'growth_formatted']].tail(12), use_container_width=True)
-                    else:
-                        st.warning("No growth data available")
-                except (NameError, UnboundLocalError, AttributeError):
-                    st.warning("No growth data available")
+        # Fallback: show growth data table if it was created
+        try:
+            # Check if dfm_growth was successfully created before the exception
+            if dfm_growth is not None and len(dfm_growth) > 0:
+                st.dataframe(dfm_growth[['Date', 'growth_formatted']].tail(12), use_container_width=True)
+            else:
+                st.warning("No growth data available")
+        except (NameError, UnboundLocalError, AttributeError):
+            st.warning("No growth data available")
 
     st.markdown("---")
 

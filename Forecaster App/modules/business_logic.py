@@ -47,7 +47,7 @@ def process_yearly_renewals(results, diagnostic_messages):
         historical_count = len(yearly_renewals_data)
         diagnostic_messages.append(
             f"✅ Non-Compliant Upfront RevRec: Added {historical_count} historical entries + "
-            f"projected future renewals at 100% probability (each historical renewal projected forward yearly)"
+            f"projected future renewals at 100% probability (only last 12 months used for projection)"
         )
         
         return True
@@ -107,12 +107,16 @@ def _apply_renewals_to_models(results, yearly_renewals_data, diagnostic_messages
         unique_months = len(set(detail.split(' on ')[1].split(' =')[0] for detail in all_future_details))
         diagnostic_messages.append(
             f"🔮 Future Non-Compliant Upfront RevRec Renewals: {all_future_entries} total projections "
-            f"across {unique_months} monthly patterns - {', '.join(all_future_details)}{'...' if len(all_future_details) > 5 else ''}"
+            f"across {unique_months} monthly patterns (based on last 12 months only) - {', '.join(all_future_details)}{'...' if len(all_future_details) > 5 else ''}"
         )
 
 
 def _project_future_renewals(yearly_renewals_data, forecast_dates, model_name, first_model_name):
-    """Project historical renewals into future forecast periods."""
+    """Project historical renewals into future forecast periods.
+    
+    Only considers renewals from the last 12 months to avoid over-forecasting
+    from potentially churned customers or outdated renewal patterns.
+    """
     future_renewals = []
     
     if len(forecast_dates) == 0:
@@ -121,13 +125,20 @@ def _project_future_renewals(yearly_renewals_data, forecast_dates, model_name, f
     forecast_start = pd.Timestamp(forecast_dates.min())
     forecast_end = pd.Timestamp(forecast_dates.max())
     
+    # Calculate cutoff date for last 12 months from forecast start
+    twelve_months_ago = forecast_start - pd.DateOffset(months=12)
+    
     # For each product in renewals data, project the pattern forward
     for product in yearly_renewals_data["Product"].unique():
         product_renewals = yearly_renewals_data[yearly_renewals_data["Product"] == product].copy()
         
         if len(product_renewals) > 0:
-            # For each historical renewal, project it forward yearly
-            for _, historical_renewal in product_renewals.iterrows():
+            # Filter to only last 12 months of renewals
+            product_renewals['Date'] = pd.to_datetime(product_renewals['Date'])
+            recent_renewals = product_renewals[product_renewals['Date'] >= twelve_months_ago]
+            
+            # For each recent renewal (last 12 months), project it forward yearly
+            for _, historical_renewal in recent_renewals.iterrows():
                 renewal_amount = historical_renewal["ACR"]
                 historical_date = pd.Timestamp(historical_renewal["Date"])
                 
