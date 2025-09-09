@@ -67,6 +67,71 @@ def create_sidebar_controls():
             key="models_selected",
             help="Core models are preselected. Additional models may be included if available."
         )
+
+        # Live Conservatism slider (moved here under Select Models) - only after first forecast run
+        if st.session_state.get('forecast_results'):
+            st.markdown("#### 🎛️ Live Conservatism")
+            baseline = st.session_state.get('baseline_forecast_results')
+            
+            # Safety check: if baseline is None or seems outdated, rebuild it from current results
+            if baseline is None or not baseline:
+                try:
+                    # Rebuild baseline from current forecast_results (assuming they are at 100% baseline)
+                    if isinstance(st.session_state.forecast_results, dict):
+                        st.session_state.baseline_forecast_results = {
+                            model_name: (model_df.copy() if hasattr(model_df, 'copy') else model_df)
+                            for model_name, model_df in st.session_state.forecast_results.items()
+                        }
+                        baseline = st.session_state.baseline_forecast_results
+                        st.session_state.forecast_conservatism_used = 100  # Reset to baseline
+                except Exception:
+                    baseline = None
+            
+            current_factor = int(st.session_state.get('forecast_conservatism_used', 100))
+            new_factor = st.slider(
+                "Adjust Forecast Conservatism", 90, 110, current_factor, 1,
+                help="Rescale forecast rows without re-running models (97% = haircut, 103% = uplift).",
+                format="%d%%",
+                key="live_conservatism_slider"
+            )
+            if 'live_conservatism_last' not in st.session_state:
+                st.session_state.live_conservatism_last = current_factor
+            if baseline is None:
+                st.caption("Baseline unavailable – live adjustment disabled.")
+            elif new_factor != st.session_state.live_conservatism_last:
+                try:
+                    factor_ratio = new_factor / 100.0
+                    adjusted = {}
+                    for model_name, model_df in baseline.items():
+                        if hasattr(model_df, 'copy') and hasattr(model_df, 'columns'):
+                            df_c = model_df.copy()
+                            if 'Type' in df_c.columns:
+                                mask = df_c['Type'] == 'forecast'
+                                if mask.any():
+                                    df_c.loc[mask,'ACR'] = df_c.loc[mask,'ACR'] * factor_ratio
+                            adjusted[model_name] = df_c
+                        elif isinstance(model_df, list):
+                            new_list = []
+                            for sub in model_df:
+                                if hasattr(sub, 'copy') and hasattr(sub, 'columns') and 'Type' in sub.columns:
+                                    sub_c = sub.copy()
+                                    mask = sub_c['Type'] == 'forecast'
+                                    if mask.any():
+                                        sub_c.loc[mask,'ACR'] = sub_c.loc[mask,'ACR'] * factor_ratio
+                                    new_list.append(sub_c)
+                                else:
+                                    new_list.append(sub)
+                            adjusted[model_name] = new_list
+                        else:
+                            adjusted[model_name] = model_df
+                    st.session_state.forecast_results = adjusted
+                    st.session_state.forecast_conservatism_used = new_factor
+                    st.session_state.live_conservatism_last = new_factor
+                    st.rerun()
+                except Exception as e:
+                    st.warning(f"Live adjustment failed: {e}")
+            else:
+                st.caption(f"Applying {new_factor}% factor.")
         
         # Prophet-specific settings
         if HAVE_PROPHET and "Prophet" in models_selected:
@@ -138,160 +203,130 @@ def create_renewals_upload_section():
 
 def create_business_adjustments_section():
     """Create business adjustments controls and return configuration."""
-    with st.sidebar.expander("📊 **Business Adjustments**", expanded=False):
-        apply_business_adjustments = st.checkbox("Enable business adjustments", False)
-        
-        if apply_business_adjustments:
-            business_growth_assumption = st.slider(
-                "📈 Annual growth %", -50, 100, 0, 5,
-                help="Expected annual growth rate to apply to forecasts"
-            )
-            market_conditions = st.selectbox(
-                "🌍 Market conditions", 
-                ["Stable", "Growth", "Contraction", "Uncertain"],
-                help="Overall market outlook affecting forecasts"
-            )
-            
-            # Market condition multipliers
-            market_multipliers = {
-                "Stable": 1.0,
-                "Growth": 1.05,  # 5% boost
-                "Contraction": 0.95,  # 5% reduction
-                "Uncertain": 0.98  # 2% reduction for uncertainty
-            }
-            market_multiplier = market_multipliers[market_conditions]
-        else:
-            business_growth_assumption = 0
-            market_conditions = "Stable"
-            market_multiplier = 1.0
-
-        # Divider remains for clarity, but accuracy section is separate now
-        st.markdown("---")
-
-    return {
-        'apply_business_adjustments': apply_business_adjustments,
-        'business_growth_assumption': business_growth_assumption,
-        'market_conditions': market_conditions,
-        'market_multiplier': market_multiplier,
-    }
+    st.sidebar.subheader("📊 **Forecast Adjustment**")
+    st.sidebar.caption(
+        "Live adjustment now available in the results view. Baseline forecasts run at 100% (no haircut/uplift); tweak interactively after the run."
+    )
+    st.sidebar.markdown("---")
+    return { 'forecast_conservatism': 100 }
 
 
 def create_accuracy_validation_section():
     """Create Accuracy & Validation controls with enhanced rolling validation."""
-    with st.sidebar.expander("🎯 **Accuracy & Validation**", expanded=True):
-        st.caption("Enhanced rolling validation uses 4-6 quarterly folds with 12-18 month training windows and recency-weighted WAPE for robust model evaluation.")
+    st.sidebar.subheader("🎯 **Accuracy & Validation**")
+    st.sidebar.caption("Enhanced rolling validation uses 4-6 quarterly folds with 12-18 month training windows and recency-weighted WAPE for robust model evaluation.")
+    
+    # Get enhanced data context for smart recommendations
+    data_context = st.session_state.get('data_context', {})
+    recommendations = data_context.get('backtesting_recommendations', {})
+    data_quality = data_context.get('data_quality_score', {})
+    
+    # Check if data analysis is complete
+    analysis_complete = st.session_state.get('data_analysis_complete', False)
+    
+    # Enhanced rolling validation recommendations
+    st.sidebar.markdown("#### 📊 **Backtesting Period**")
+    st.sidebar.markdown("")  # Add spacing
+    
+    if analysis_complete and recommendations:
+        # Use data-driven recommendations
+        min_value = recommendations.get('min_value', 12)
+        max_value = recommendations.get('max_value', 18)
+        default_value = recommendations.get('default_value', 15)
         
-        # Get enhanced data context for smart recommendations
-        data_context = st.session_state.get('data_context', {})
-        recommendations = data_context.get('backtesting_recommendations', {})
-        data_quality = data_context.get('data_quality_score', {})
+        # Clean, compact data quality status
+        status_icon = recommendations.get('icon', '📊')
+        status_title = recommendations.get('title', 'Data Analysis')
+        status_desc = recommendations.get('description', 'Analyzing data...')
         
-        # Check if data analysis is complete
-        analysis_complete = st.session_state.get('data_analysis_complete', False)
+        if recommendations.get('status') == 'limited':
+            st.sidebar.warning(f"{status_icon} **{status_title}**: {status_desc}")
+        elif recommendations.get('status') == 'moderate':
+            st.sidebar.info(f"{status_icon} **{status_title}**: {status_desc}")
+        elif recommendations.get('status') == 'good':
+            st.sidebar.success(f"{status_icon} **{status_title}**: {status_desc}")
+        else:
+            st.sidebar.success(f"{status_icon} **{status_title}**: {status_desc}")
         
-        # Enhanced rolling validation recommendations
-        st.markdown("#### 📊 **Backtesting Period**")
-        st.markdown("")  # Add spacing
+        # Enhanced rolling validation recommendation
+        st.sidebar.caption(f"💡 Enhanced rolling validation recommended: 15 months with 4-6 quarterly folds.")
         
-        if analysis_complete and recommendations:
-            # Use data-driven recommendations
+        # Simplified metrics in one row
+        if data_quality and 'score' in data_quality:
+            score = data_quality['score']
+            grade = data_quality.get('grade', 'N/A')
+            consistency = data_quality.get('consistency_ratio', 0)
+            
+            st.sidebar.caption(f"**Quality**: {grade} ({score}/100) | **Consistency**: {consistency:.0%} | **Products**: {data_context.get('total_products', 0)}")
+            # Persist recommendations so the main page can echo them exactly
+            st.session_state['recommended_backtest_text'] = recommendations.get('message', '')
+            st.session_state['recommended_backtest_range'] = (
+                recommendations.get('min_value', 12), recommendations.get('max_value', 18)
+            )
+            st.session_state['recommended_backtest_default'] = recommendations.get('default_value', 15)
+    elif analysis_complete:
+        # Analysis complete but no recommendations - show status
+        st.sidebar.success("✅ **Data Analysis Complete!**")
+        st.sidebar.caption("Processing enhanced rolling validation recommendations...")
+        
+        # Use calculated recommendations if available, otherwise fallback
+        if recommendations:
             min_value = recommendations.get('min_value', 12)
             max_value = recommendations.get('max_value', 18)
             default_value = recommendations.get('default_value', 15)
-            
-            # Clean, compact data quality status
-            status_icon = recommendations.get('icon', '📊')
-            status_title = recommendations.get('title', 'Data Analysis')
-            status_desc = recommendations.get('description', 'Analyzing data...')
-            
-            if recommendations.get('status') == 'limited':
-                st.warning(f"{status_icon} **{status_title}**: {status_desc}")
-            elif recommendations.get('status') == 'moderate':
-                st.info(f"{status_icon} **{status_title}**: {status_desc}")
-            elif recommendations.get('status') == 'good':
-                st.success(f"{status_icon} **{status_title}**: {status_desc}")
-            else:
-                st.success(f"{status_icon} **{status_title}**: {status_desc}")
-            
-            # Enhanced rolling validation recommendation
-            st.caption(f"💡 Enhanced rolling validation recommended: 15 months with 4-6 quarterly folds.")
-            
-            # Simplified metrics in one row
-            if data_quality and 'score' in data_quality:
-                score = data_quality['score']
-                grade = data_quality.get('grade', 'N/A')
-                consistency = data_quality.get('consistency_ratio', 0)
-                
-                st.caption(f"**Quality**: {grade} ({score}/100) | **Consistency**: {consistency:.0%} | **Products**: {data_context.get('total_products', 0)}")
-                # Persist recommendations so the main page can echo them exactly
-                st.session_state['recommended_backtest_text'] = recommendations.get('message', '')
-                st.session_state['recommended_backtest_range'] = (
-                    recommendations.get('min_value', 12), recommendations.get('max_value', 18)
-                )
-                st.session_state['recommended_backtest_default'] = recommendations.get('default_value', 15)
-        elif analysis_complete:
-            # Analysis complete but no recommendations - show status
-            st.success("✅ **Data Analysis Complete!**")
-            st.caption("Processing enhanced rolling validation recommendations...")
-            
-            # Use calculated recommendations if available, otherwise fallback
-            if recommendations:
-                min_value = recommendations.get('min_value', 12)
-                max_value = recommendations.get('max_value', 18)
-                default_value = recommendations.get('default_value', 15)
-            else:
-                # Enhanced rolling validation fallback values
-                min_value = 12
-                max_value = 18
-                default_value = 15
         else:
-            # No data uploaded yet - show waiting state
-            st.info("📤 **Please upload data for enhanced validation recommendations**")
-            
-            # Disable slider until data is uploaded
+            # Enhanced rolling validation fallback values
             min_value = 12
             max_value = 18
             default_value = 15
+    else:
+        # No data uploaded yet - show waiting state
+        st.sidebar.info("📤 **Please upload data for enhanced validation recommendations**")
         
-        # Only enable slider if analysis is complete
-        slider_disabled = not analysis_complete
-        
-        st.markdown("")  # Add spacing before slider
-        backtest_months = st.slider(
-            "Backtest last X months",
-            min_value=12,
-            max_value=18,
-            value=15,
-            step=1,
-            disabled=slider_disabled,
-            help=f"Enhanced rolling validation: {recommendations.get('recommended_range', '12-15 months') if analysis_complete else 'Upload data first'} with quarterly folds"
-        )
-        
-        # Simple backtesting - no advanced settings needed
-        # The main slider controls everything for simple validation
+        # Disable slider until data is uploaded
+        min_value = 12
+        max_value = 18
+        default_value = 15
+    
+    # Only enable slider if analysis is complete
+    slider_disabled = not analysis_complete
+    
+    st.sidebar.markdown("")  # Add spacing before slider
+    backtest_months = st.sidebar.slider(
+        "Backtest last X months",
+        min_value=12,
+        max_value=18,
+        value=15,
+        step=1,
+        disabled=slider_disabled,
+        help=f"Enhanced rolling validation: {recommendations.get('recommended_range', '12-15 months') if analysis_complete else 'Upload data first'} with quarterly folds"
+    )
+    
+    # Simple backtesting - no advanced settings needed
+    # The main slider controls everything for simple validation
 
-        # Fiscal calendar configuration (used for seasonal diagnostics)
-        st.markdown("#### 📅 **Fiscal Calendar**")
-        months = [
-            (1, "January"), (2, "February"), (3, "March"), (4, "April"), (5, "May"), (6, "June"),
-            (7, "July"), (8, "August"), (9, "September"), (10, "October"), (11, "November"), (12, "December")
-        ]
-        month_labels = [m[1] for m in months]
-        default_index = 6  # July
-        selected_label = st.selectbox(
-            "Fiscal year start month",
-            options=month_labels,
-            index=default_index,
-            help="For seasonal diagnostics: sets which month is counted as fiscal month 1."
-        )
-        fiscal_year_start_month = next(m for m, label in months if label == selected_label)
+    # Fiscal calendar configuration (used for seasonal diagnostics)
+    st.sidebar.markdown("#### 📅 **Fiscal Calendar**")
+    months = [
+        (1, "January"), (2, "February"), (3, "March"), (4, "April"), (5, "May"), (6, "June"),
+        (7, "July"), (8, "August"), (9, "September"), (10, "October"), (11, "November"), (12, "December")
+    ]
+    month_labels = [m[1] for m in months]
+    default_index = 6  # July
+    selected_label = st.sidebar.selectbox(
+        "Fiscal year start month",
+        options=month_labels,
+        index=default_index,
+        help="For seasonal diagnostics: sets which month is counted as fiscal month 1."
+    )
+    fiscal_year_start_month = next(m for m, label in months if label == selected_label)
 
-        # Optional: Expanding CV diagnostics (slower). Redundant with enhanced rolling.
-        enable_expanding_cv = st.checkbox(
-            "Enable expanding CV diagnostics (slower)",
-            value=False,
-            help="Adds expanding-window CV summary for each model. Disable for faster runs; enhanced rolling already drives selection."
-        )
+    # Optional: Expanding CV diagnostics (slower). Redundant with enhanced rolling.
+    enable_expanding_cv = st.sidebar.checkbox(
+        "Enable expanding CV diagnostics (slower)",
+        value=False,
+        help="Adds expanding-window CV summary for each model. Disable for faster runs; enhanced rolling already drives selection."
+    )
 
     # Simple backtesting flag - always enabled for reliable validation
     enable_backtesting = True

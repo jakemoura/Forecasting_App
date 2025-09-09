@@ -59,10 +59,13 @@ def store_forecast_results(results, avg_mapes, avg_smapes, avg_rmses, avg_mases,
     st.session_state.diagnostic_messages = diagnostic_messages
     st.session_state.uploaded_filename = uploaded_filename
     
-    # Store business configuration
-    st.session_state.business_adjustments_applied = business_config['apply_business_adjustments']
-    st.session_state.business_growth_used = business_config['business_growth_assumption']
-    st.session_state.market_conditions_used = business_config['market_conditions']
+    # Store business configuration / forecast adjustment (post-refactor)
+    # Legacy keys (apply_business_adjustments, business_growth_assumption, market_conditions) were removed
+    # when forecast_conservatism slider replaced them. We defensively fallback for backward compatibility.
+    st.session_state.forecast_conservatism_used = business_config.get('forecast_conservatism', 100)
+    st.session_state.business_adjustments_applied = business_config.get('apply_business_adjustments', False)
+    st.session_state.business_growth_used = business_config.get('business_growth_assumption', 0)
+    st.session_state.market_conditions_used = business_config.get('market_conditions', 'N/A')
     st.session_state.business_aware_selection_used = enable_business_aware_selection
     
     # Store additional flags
@@ -74,6 +77,44 @@ def store_forecast_results(results, avg_mapes, avg_smapes, avg_rmses, avg_mases,
         hybrid_avg_mape = np.mean(list(best_mapes_per_product.values()))
         st.session_state.forecast_mapes["Best per Product"] = hybrid_avg_mape
         st.session_state.forecast_results["Best per Product"] = hybrid_df
+
+    # Capture baseline (unadjusted) results for dynamic conservatism slider
+    # If the original run used a conservatism factor != 100, reconstruct baseline by dividing forecast rows
+    try:
+        factor_used = st.session_state.get('forecast_conservatism_used', 100)
+        if 'baseline_forecast_results' not in st.session_state or st.session_state.get('baseline_forecast_results') is None:
+            if isinstance(st.session_state.forecast_results, dict):
+                baseline = {}
+                for model_name, model_df in st.session_state.forecast_results.items():
+                    # Handle DataFrame or list of DataFrames; store pass-through for unknown types
+                    if factor_used != 100 and hasattr(model_df, 'copy') and hasattr(model_df, 'columns'):
+                        df_copy = model_df.copy()
+                        if 'Type' in df_copy.columns:
+                            mask = df_copy['Type'] == 'forecast'
+                            if mask.any():
+                                df_copy.loc[mask, 'ACR'] = df_copy.loc[mask, 'ACR'] / (factor_used/100.0)
+                        baseline[model_name] = df_copy
+                    elif factor_used != 100 and isinstance(model_df, list):
+                        adj_list = []
+                        for sub in model_df:
+                            if hasattr(sub, 'copy') and hasattr(sub, 'columns') and 'Type' in sub.columns:
+                                sub_c = sub.copy()
+                                mask = sub_c['Type'] == 'forecast'
+                                if mask.any():
+                                    sub_c.loc[mask,'ACR'] = sub_c.loc[mask,'ACR'] / (factor_used/100.0)
+                                adj_list.append(sub_c)
+                            else:
+                                adj_list.append(sub)
+                        baseline[model_name] = adj_list
+                    else:
+                        # factor 100 or unknown type – store as-is
+                        baseline[model_name] = model_df
+                st.session_state.baseline_forecast_results = baseline
+            else:
+                st.session_state.baseline_forecast_results = None
+    except Exception:
+        # Fail silently; dynamic adjustment will fallback to current adjusted results
+        st.session_state.baseline_forecast_results = None
 
 
 def clear_session_state_for_new_forecast():
@@ -89,7 +130,8 @@ def clear_session_state_for_new_forecast():
         'forecast_mases', 'forecast_rmses', 'product_smapes',
         'product_mases', 'product_rmses',
         'best_models_per_product_standard', 'best_models_per_product_backtesting',
-        'data_context'  # Clear data context for fresh analysis
+        'data_context',  # Clear data context for fresh analysis
+        'baseline_forecast_results', 'forecast_conservatism_used'  # Clear baseline to rebuild with new forecast timing
     ]
     
     for key in keys_to_clear:
@@ -106,7 +148,8 @@ def initialize_session_state_variables():
         'product_mapes', 'product_smapes', 'product_mases', 'product_rmses',
         'best_models_per_product', 'best_mapes_per_product',
         'business_adjustments_applied', 'business_growth_used', 
-        'market_conditions_used', 'yearly_renewals_applied'
+        'market_conditions_used', 'yearly_renewals_applied',
+        'forecast_conservatism_used'
     ]
     
     for var in session_vars:
@@ -130,6 +173,7 @@ def get_forecast_configuration():
         'business_adjustments_applied': st.session_state.get('business_adjustments_applied', False),
         'business_growth_used': st.session_state.get('business_growth_used', 0),
         'market_conditions_used': st.session_state.get('market_conditions_used', 'Stable'),
+        'forecast_conservatism_used': st.session_state.get('forecast_conservatism_used', 100),
         'business_aware_selection_used': st.session_state.get('business_aware_selection_used', False),
         'yearly_renewals_applied': st.session_state.get('yearly_renewals_applied', False),
         'uploaded_filename': st.session_state.get('uploaded_filename', 'Unknown')

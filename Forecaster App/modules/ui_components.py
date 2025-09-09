@@ -1295,11 +1295,35 @@ def display_forecast_results():
     # === KEY PERFORMANCE INDICATORS ===
     # (Removed standalone Key Metrics header; unified grid shown below)
     
-    df_active = results.get(active_key, pd.DataFrame())
+    def _coerce_model_data(model_data):
+        """Return a unified DataFrame for a model's data.
+
+        Handles cases where model_data is already a DataFrame or a list of per‑product DataFrames.
+        Falls back to empty DataFrame if structure unrecognized.
+        """
+        try:
+            if isinstance(model_data, list):
+                dfs = [d for d in model_data if hasattr(d, 'columns') and 'Product' in d.columns]
+                if dfs:
+                    return pd.concat(dfs, ignore_index=True)
+                # If list but no valid DataFrames, return empty
+                return pd.DataFrame()
+            if hasattr(model_data, 'columns'):
+                return model_data
+        except Exception:
+            pass
+        return pd.DataFrame()
+
+    df_active = _coerce_model_data(results.get(active_key, pd.DataFrame()))
     # Helper slices
     if not df_active.empty and {'Product', 'Date', 'ACR'}.issubset(df_active.columns):
-        is_fore = df_active.get('Type').isin(['forecast','non-compliant-forecast']) if 'Type' in df_active.columns else pd.Series([True]*len(df_active))
-        is_hist = df_active.get('Type').eq('actual') if 'Type' in df_active.columns else pd.Series([False]*len(df_active))
+        if 'Type' in df_active.columns:
+            type_col = df_active['Type'].fillna('')
+            is_fore = type_col.isin(['forecast','non-compliant-forecast'])
+            is_hist = type_col.eq('actual')
+        else:
+            is_fore = pd.Series([True]*len(df_active))
+            is_hist = pd.Series([False]*len(df_active))
         df_fore = df_active[is_fore].copy()
         df_hist = df_active[is_hist].copy()
     else:
@@ -1585,11 +1609,11 @@ def display_forecast_results():
     
     # Use adjusted data if available, otherwise use original  
     if st.session_state.get('adjusted_forecast_results') is not None:
-        chart_model_data = st.session_state.adjusted_forecast_results[chart_model]
+        chart_model_data = _coerce_model_data(st.session_state.adjusted_forecast_results[chart_model])
         if any(adj != 0 for adj in st.session_state.get('product_adjustments_applied', {}).values()):
             st.info("📊 Showing adjusted forecasts based on your custom settings")
     else:
-        chart_model_data = results[chart_model]
+        chart_model_data = _coerce_model_data(results[chart_model])
         
         # Business warnings for polynomial models
         if chart_model in ["Poly-2", "Poly-3"]:
@@ -1778,7 +1802,16 @@ def display_forecast_results():
                 )
         
         # Show fiscal year period info
-        months_elapsed = max(0, (now.year - fy_start_date.year) * 12 + (now.month - fy_start_date.month))
+        # Revised logic: elapsed months are determined by presence of ACTUAL data within the fiscal year,
+        # not by today's calendar date. If no actuals yet in FY, elapsed = 0 (so remaining = 12).
+        fy_actual_rows = fy_data[fy_data['Type'].isin(['actual', 'history', 'historical'])].copy()
+        if not fy_actual_rows.empty:
+            fy_actual_rows['Date'] = pd.to_datetime(fy_actual_rows['Date'])
+            actual_months = fy_actual_rows['Date'].dt.to_period('M').unique()
+            months_elapsed = int(len(actual_months))
+        else:
+            months_elapsed = 0
+        months_elapsed = min(12, max(0, months_elapsed))
         months_remaining = 12 - months_elapsed
         st.caption(
             f"📅 FY{current_fy_year}: {fy_start_date.strftime('%b %Y')} - {fy_end_date.strftime('%b %Y')} | "
@@ -1790,7 +1823,7 @@ def display_forecast_results():
     st.markdown("---")
 
     # Quick product selector (render only one chart at a time for stability/performance)
-    unique_products = list(chart_model_data["Product"].unique())
+    unique_products = list(chart_model_data["Product"].unique()) if not chart_model_data.empty else []
     if len(unique_products) == 0:
         st.warning("No products found in results")
         return
@@ -1918,13 +1951,19 @@ def display_forecast_results():
             key="download_model_choice"
         )
 
-        # Use adjusted results if available, otherwise use original
+        # Use adjusted results if available, otherwise use current forecast results (which include live conservatism)
         if st.session_state.get('adjusted_forecast_results') is not None:
             download_data = st.session_state.adjusted_forecast_results[choice]
             if st.session_state.get('product_adjustments_applied'):
                 st.success("📊 Download includes your custom adjustments!")
         else:
-            download_data = results[choice]
+            # Use session state forecast_results which includes live conservatism adjustments
+            download_data = st.session_state.forecast_results[choice]
+            
+        # Show conservatism factor if not 100%
+        conservatism_factor = st.session_state.get('forecast_conservatism_used', 100)
+        if conservatism_factor != 100:
+            st.success(f"🎛️ Download includes {conservatism_factor}% conservatism adjustment!")
 
         # Show yearly renewals overlay status
         if st.session_state.get('yearly_renewals_applied', False):
@@ -1976,6 +2015,11 @@ def display_forecast_results():
 
         if st.session_state.get('yearly_renewals_applied', False):
             filename_suffix += "_YearlyRenewals"
+            
+        # Add conservatism factor to filename if not 100%
+        conservatism_factor = st.session_state.get('forecast_conservatism_used', 100)
+        if conservatism_factor != 100:
+            filename_suffix += f"_conservatism{conservatism_factor}pct"
 
         with col2:
             st.download_button(
@@ -2312,7 +2356,8 @@ def display_forecast_results():
         # === DOWNLOAD RESULTS (moved to bottom) ===
         with st.expander("⬇️ Download Results (Best per Product • Backtesting)", expanded=False):
             try:
-                df_dl = results.get("Best per Product (Backtesting)", pd.DataFrame())
+                # Use session state forecast_results which includes live conservatism adjustments
+                df_dl = st.session_state.forecast_results.get("Best per Product (Backtesting)", pd.DataFrame())
                 if not df_dl.empty and {'Product','Date','ACR'}.issubset(df_dl.columns):
                     if 'Type' in df_dl.columns:
                         mask = df_dl['Type'].isin(['forecast', 'non-compliant-forecast'])
@@ -2320,8 +2365,16 @@ def display_forecast_results():
                     base_cols = [c for c in ['Product','Date','Type','ACR','BestModel'] if c in df_dl.columns]
                     other_cols = [c for c in df_dl.columns if c not in base_cols]
                     df_dl = df_dl[base_cols + other_cols]
+                    
+                    # Generate filename with conservatism factor if not 100%
+                    filename = "forecast_backtesting_best_per_product"
+                    conservatism_factor = st.session_state.get('forecast_conservatism_used', 100)
+                    if conservatism_factor != 100:
+                        filename += f"_conservatism{conservatism_factor}pct"
+                    filename += ".csv"
+                    
                     csv_bytes = df_dl.to_csv(index=False).encode('utf-8')
-                    st.download_button("Download CSV", csv_bytes, file_name="forecast_backtesting_best_per_product.csv", mime="text/csv")
+                    st.download_button("Download CSV", csv_bytes, file_name=filename, mime="text/csv")
                 else:
                     st.caption("No downloadable forecast found for Backtesting view.")
             except Exception:

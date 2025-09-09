@@ -158,8 +158,7 @@ def _maybe_apply_drift(series: pd.Series, forecast, model_name: str, product: st
 
 
 def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_statistical_validation=True,
-                            apply_business_adjustments=False, business_growth_assumption=0,
-                            market_multiplier=1.0, market_conditions="Stable",
+                            forecast_conservatism=100,
                             enable_business_aware_selection=True, enable_prophet_holidays=False,
                             enable_backtesting=True,
                             use_backtesting_selection: bool = True,
@@ -186,10 +185,7 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
         models_selected: List of model names to run
         horizon: Number of months to forecast
         enable_statistical_validation: Whether to apply statistical validation
-        apply_business_adjustments: Whether to apply business adjustments
-        business_growth_assumption: Annual growth percentage
-        market_multiplier: Market condition multiplier
-        market_conditions: Market conditions description
+    forecast_conservatism: Forecast conservatism factor (baseline 100%; live slider adjusts post-run)
         enable_business_aware_selection: Whether to use business-aware model selection
         enable_prophet_holidays: Whether to include holidays in Prophet
         enable_backtesting: Whether to run backtesting validation analysis
@@ -335,13 +331,15 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
         train, val = split_result
         diagnostic_messages.append(f"✅ **Split Complete**: {product} - Training: {len(train)} months, Validation: {len(val)} months")
         
-        # Create future date index
+        # Create future date index starting after validation data ends (not training)
+        # Because get_seasonality_aware_split may create a gap between train and val for large datasets
         future_idx = pd.date_range(
-            pd.Timestamp(series.index[-1]) + pd.DateOffset(months=1), 
+            pd.Timestamp(val.index[-1]) + pd.DateOffset(months=1), 
             periods=horizon, freq="MS"
         )
+        diagnostic_messages.append(f"📅 **Forecast Timing**: {product} - Training ends: {train.index[-1]}, Validation ends: {val.index[-1]}, Forecast starts: {future_idx[0]}")
         
-        # Create actual data DataFrame
+        # Create actual data DataFrame (full series for display, but forecast starts after training)
         act_df = pd.DataFrame({
             "Product": product, 
             "Date": series.index, 
@@ -370,8 +368,8 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
             product, series, train, val, future_idx, act_df,
             models_selected, results, mapes, smapes, mases, rmses,
             sarima_params, diagnostic_messages, horizon,
-            enable_statistical_validation, apply_business_adjustments,
-            business_growth_assumption, market_multiplier, market_conditions,
+            enable_statistical_validation, False,  # apply_business_adjustments = False
+            0, 1.0, "Stable",  # business_growth_assumption=0, market_multiplier=1.0, market_conditions="Stable"
             enable_prophet_holidays, enable_backtesting, backtest_months, backtest_gap, validation_horizon,
             fiscal_year_start_month,
             backtesting_results, prog, eta_ph, done, total,
@@ -689,6 +687,11 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
                 diagnostic_messages.append(f"  • Skipped combinations: {', '.join(skipped_backtests)}")
         else:
             diagnostic_messages.append("🧪 **Backtesting Summary**: No backtesting results available")
+    
+    # Apply forecast conservatism adjustment if needed
+    if forecast_conservatism != 100:
+        from .business_logic import apply_forecast_conservatism_to_results
+        results = apply_forecast_conservatism_to_results(results, forecast_conservatism, diagnostic_messages)
     
     return (results, avg_mapes, sarima_params, diagnostic_messages,
             {'smapes': avg_smapes, 'mases': avg_mases, 'rmses': avg_rmses},

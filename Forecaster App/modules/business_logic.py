@@ -402,3 +402,101 @@ def find_best_models_per_product(results, product_mapes, product_smapes, product
             best_mapes_per_product[product] = 1.0
     
     return best_models_per_product, best_mapes_per_product
+
+
+def apply_forecast_conservatism_to_results(results, forecast_conservatism, diagnostic_messages):
+    """
+    Apply forecast conservatism adjustment to all model results.
+    
+    Args:
+        results: Dictionary of model results (each containing list of DataFrames per product)
+        forecast_conservatism: Conservatism factor (90-110, where 97 = 3% more conservative)
+        diagnostic_messages: List to append diagnostic messages
+        
+    Returns:
+        dict: Adjusted results with conservatism factor applied
+    """
+    if forecast_conservatism == 100:
+        # No adjustment needed
+        return results
+    
+    conservatism_factor = forecast_conservatism / 100.0
+    adjusted_results = {}
+    
+    diagnostic_messages.append(
+        f"🎯 Forecast Conservatism: Applying {forecast_conservatism}% factor - "
+        f"{'more conservative' if forecast_conservatism < 100 else 'more optimistic'}"
+    )
+    
+    # Debug: Check the actual structure of results
+    try:
+        for model_name, model_data in results.items():
+            # Debug logging
+            model_data_type = type(model_data).__name__
+            diagnostic_messages.append(f"🔍 Debug: {model_name} data type: {model_data_type}")
+            
+            # Handle different data structures
+            if isinstance(model_data, str):
+                # Handle case where model_data is a string (unexpected)
+                diagnostic_messages.append(f"⚠️ Skipping conservatism adjustment for {model_name}: data is string")
+                adjusted_results[model_name] = model_data
+                continue
+                
+            elif isinstance(model_data, list):
+                # Expected case: model_data is a list of DataFrames
+                adjusted_model_data = []
+                
+                for i, product_data in enumerate(model_data):
+                    try:
+                        # Check if product_data is a DataFrame
+                        if hasattr(product_data, 'copy') and hasattr(product_data, 'columns'):
+                            # product_data is a DataFrame
+                            adjusted_product_data = product_data.copy()
+                            
+                            # Apply conservatism only to forecast rows (Type == "forecast")
+                            if 'Type' in adjusted_product_data.columns:
+                                forecast_mask = adjusted_product_data['Type'] == 'forecast'
+                                if forecast_mask.any():
+                                    # Adjust the ACR values for forecast rows only
+                                    adjusted_product_data.loc[forecast_mask, 'ACR'] = (
+                                        adjusted_product_data.loc[forecast_mask, 'ACR'] * conservatism_factor
+                                    )
+                            
+                            adjusted_model_data.append(adjusted_product_data)
+                        else:
+                            # Handle non-DataFrame data
+                            product_data_type = type(product_data).__name__
+                            diagnostic_messages.append(f"⚠️ Skipping conservatism for {model_name}[{i}]: type {product_data_type}")
+                            adjusted_model_data.append(product_data)
+                            
+                    except Exception as e:
+                        diagnostic_messages.append(f"⚠️ Error processing {model_name}[{i}]: {str(e)}")
+                        adjusted_model_data.append(product_data)
+                
+                adjusted_results[model_name] = adjusted_model_data
+                
+            elif hasattr(model_data, 'copy') and hasattr(model_data, 'columns'):
+                # Case where model_data is a single DataFrame (not a list)
+                adjusted_data = model_data.copy()
+                
+                # Apply conservatism only to forecast rows
+                if 'Type' in adjusted_data.columns:
+                    forecast_mask = adjusted_data['Type'] == 'forecast'
+                    if forecast_mask.any():
+                        adjusted_data.loc[forecast_mask, 'ACR'] = (
+                            adjusted_data.loc[forecast_mask, 'ACR'] * conservatism_factor
+                        )
+                
+                adjusted_results[model_name] = adjusted_data
+                
+            else:
+                # Unknown data structure - pass through unchanged
+                diagnostic_messages.append(f"⚠️ Unknown data structure for {model_name}: {model_data_type}")
+                adjusted_results[model_name] = model_data
+                
+    except Exception as e:
+        diagnostic_messages.append(f"❌ Critical error in conservatism adjustment: {str(e)}")
+        # Return original results if there's a critical error
+        return results
+    
+    return adjusted_results
