@@ -85,7 +85,8 @@
             <li>Upload your Excel/CSV file with Date, Product, and ACR columns. Configure sidebar settings (models, horizon, backtesting options).</li>
             <li>The app automatically defaults to <strong>Best per Product (Backtesting)</strong> - the recommended approach for highest accuracy.</li>
             <li>Review results summary showing WAPE, confidence levels, and model selection breakdown (e.g., "SARIMA 57%, ETS 43%").</li>
-            <li>Use the model dropdown to compare different approaches or individual models. Download results or apply interactive adjustments.</li>
+            <li>Use the model dropdown to compare different approaches. Apply Live Conservatism adjustments (90-110%) for scenario planning.</li>
+            <li>Download results with your adjustments automatically included in the exported data and filenames.</li>
           </ol>
         </div>
         <div class="card">
@@ -131,21 +132,52 @@
         <div class="card"><h3>Polynomial</h3><p>Business-friendly baselines with guardrails to prevent overfit; included in ranking.</p></div>
       </div>
 
+      <h2>Live Conservatism Feature</h2>
+      <div class="infobox">
+        <p><strong>🎛️ Real-Time Forecast Adjustment:</strong> The Live Conservatism slider allows you to apply instant haircuts or uplifts to your forecasts without re-running the models. Perfect for scenario planning and conservative estimates.</p>
+      </div>
+      
+      <div class="grid">
+        <div class="card">
+          <h3>How It Works</h3>
+          <ul>
+            <li><strong>Location:</strong> Appears in sidebar under "Select Models" after your first forecast</li>
+            <li><strong>Range:</strong> 90-110% with 1% precision (e.g., 97% for 3% haircut)</li>
+            <li><strong>Scope:</strong> Only adjusts forecast rows, preserves historical actuals</li>
+            <li><strong>Speed:</strong> Instant updates to charts, totals, and metrics</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Common Use Cases</h3>
+          <ul>
+            <li><strong>Conservative planning:</strong> 95-97% for cautious estimates</li>
+            <li><strong>Optimistic scenarios:</strong> 102-105% for growth targets</li>
+            <li><strong>Management adjustments:</strong> Quick what-if analysis</li>
+            <li><strong>Risk management:</strong> Stress testing forecast sensitivity</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="callout info">
+        <p><strong>Export Integration:</strong> All downloads (Excel/CSV) automatically include your conservatism adjustments. Filenames show the factor (e.g., <code>_conservatism97pct</code>) and success messages confirm when adjustments are included.</p>
+      </div>
+
       <h2>Understanding the Results Interface</h2>
       <div class="kpis">
         <div class="kpi"><strong>Results Summary</strong><br><span class="muted">Shows overall WAPE, confidence level, model breakdown percentages, and total forecast amount.</span></div>
         <div class="kpi"><strong>Model Dropdown</strong><br><span class="muted">Defaults to "Best per Product (Backtesting)" but allows comparison with other approaches. Shows WAPE percentage for selected model.</span></div>
         <div class="kpi"><strong>Forecast Totals</strong><br><span class="muted">Product-level forecast amounts with individual product charts and performance indicators.</span></div>
-        <div class="kpi"><strong>Interactive Features</strong><br><span class="muted">Apply manual adjustments, download results, view backtesting details, and access diagnostic information.</span></div>
+        <div class="kpi"><strong>Interactive Features</strong><br><span class="muted">Live Conservatism slider (90-110%), download results with adjustments, view backtesting details, and access diagnostic information.</span></div>
       </div>
 
       <h2>Troubleshooting & Best Practices</h2>
       <ul>
         <li><strong>Short history (&lt;24 months):</strong> App automatically falls back to Best per Product (Standard) with multi-metric ranking.</li>
         <li><strong>Zero/near-zero actuals:</strong> WAPE handles this better than MAPE, but very sparse data may still be challenging.</li>
-        <li><strong>High WAPE (&gt;30%):</strong> Consider applying interactive adjustments, checking for outliers, or using longer historical periods.</li>
+        <li><strong>High WAPE (&gt;30%):</strong> Use the Live Conservatism slider for quick adjustments, check for outliers, or use longer historical periods.</li>
         <li><strong>Polynomial warnings:</strong> Business-aware selection is enabled by default to prioritize seasonal models over polynomial fits for revenue data.</li>
         <li><strong>Model comparison:</strong> Use the dropdown to compare individual models with composite approaches; composite often wins.</li>
+        <li><strong>Live adjustments:</strong> Conservatism slider preserves your baseline - you can always return to 100% without re-running forecasts.</li>
       </ul>
     </section>
 

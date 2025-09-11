@@ -18,6 +18,7 @@ Two professional-grade Streamlit applications for business revenue forecasting:
 ### Forecaster App (Monthly/Weekly Data)
 - **🔮 Advanced Models**: SARIMA (AIC/BIC), ETS, Prophet (holidays), Auto-ARIMA, LightGBM, Seasonal-Naive
 - **🎯 Interactive Adjustments**: Management overrides, growth assumptions, scenario planning
+- **🎛️ Live Conservatism**: Real-time forecast adjustment slider (90-110%) without re-running models
 - **📋 Comprehensive Reporting**: Product-level breakdowns with confidence intervals
 
 ### Quarter Outlook Forecaster (Daily Data)
@@ -133,9 +134,31 @@ Two professional-grade Streamlit applications for business revenue forecasting:
 
 **🔧 When WAPE is High:**
 - Apply interactive adjustments for management overrides
+- Use the Live Conservatism slider for real-time forecast scaling (90-110%)
 - Check for outliers or data quality issues  
 - Consider longer historical periods if available
 - Review polynomial model warnings (deprioritized automatically)
+
+## Live Conservatism Feature
+
+**🎛️ Real-Time Forecast Adjustment**
+- **Purpose**: Apply haircuts (97%) or uplifts (103%) to forecasts without re-running models
+- **Range**: 90-110% adjustment factor with 1% precision
+- **Scope**: Only applies to forecast rows, preserves historical actual data
+- **Speed**: Instant updates to charts, metrics, and export data
+- **Persistence**: Factor maintained throughout session and included in downloads
+
+**📊 Usage:**
+- **Location**: Sidebar under "Select Models" section (only appears after first forecast)
+- **Default**: 100% baseline (no adjustment)
+- **Common uses**: Conservative planning (95-97%), optimistic scenarios (102-105%)
+- **Visual feedback**: Updated charts and fiscal year totals in real-time
+
+**📥 Export Integration:**
+- **Excel downloads**: Include conservatism factor in filename (`_conservatism97pct`)
+- **CSV downloads**: Conservatism factor included in filename and data
+- **Success indicators**: Clear messaging when downloads include adjustments
+- **Baseline restoration**: Automatically rebuilds fresh baseline from new forecasts
 
 ## Developer Setup (Optional)
 
