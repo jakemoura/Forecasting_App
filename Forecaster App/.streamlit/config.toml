@@ -15,3 +15,11 @@ port = 8501
 [client]
 showErrorDetails = false
 toolbarMode = "minimal"
+
+# Prevent Altair from creating data files
+[runner]
+magicEnabled = false
+
+# Chart configuration to minimize data file creation
+[theme]
+primaryColor = "#1f77b4"

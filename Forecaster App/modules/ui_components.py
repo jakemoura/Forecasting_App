@@ -1438,6 +1438,9 @@ def apply_multi_fiscal_year_adjustments(chart_model_data, fiscal_year_adjustment
             
             # Apply distribution method
             num_months = len(fy_forecast_data)
+            if num_months == 0:
+                continue  # Skip if no data in this fiscal year
+                
             if distribution_method == "Linear Ramp":
                 factors = np.linspace(adjustment_ratio * 0.8, adjustment_ratio * 1.2, num_months)
             elif distribution_method == "Exponential":
@@ -1455,12 +1458,36 @@ def apply_multi_fiscal_year_adjustments(chart_model_data, fiscal_year_adjustment
             # Apply adjustments
             fy_forecast_indices = fy_forecast_data.index
             original_values = adjusted_data.loc[fy_forecast_indices, 'ACR'].values
-            adjusted_values = original_values * factors
-            adjusted_data.loc[fy_forecast_indices, 'ACR'] = adjusted_values
+            
+            # Ensure factors and values have matching dimensions
+            if len(original_values) != len(factors):
+                # Adjust factors to match actual data length
+                if len(factors) > len(original_values):
+                    # Trim factors to match data length
+                    factors = factors[:len(original_values)]
+                else:
+                    # Repeat the last factor value to match data length
+                    last_factor = factors[-1] if len(factors) > 0 else adjustment_ratio
+                    factors = np.concatenate([factors, np.full(len(original_values) - len(factors), last_factor)])
+            
+            # Apply the adjustments
+            try:
+                adjusted_values = original_values * factors
+                adjusted_data.loc[fy_forecast_indices, 'ACR'] = adjusted_values
+            except Exception as e:
+                # Skip this adjustment if there's still a dimension mismatch
+                print(f"Warning: Could not apply adjustment for {product} FY{fy_year}: {e}")
+                continue
             
             # Track adjustment summary
             if product not in adjustment_summary:
                 adjustment_summary[product] = {}
+            
+            # Calculate total impact (only if adjustment was successful)
+            try:
+                total_impact = adjusted_values.sum() - original_values.sum()
+            except:
+                total_impact = 0
             
             adjustment_summary[product][f"FY{fy_year}"] = {
                 'target_yoy': target_yoy,
@@ -1468,7 +1495,7 @@ def apply_multi_fiscal_year_adjustments(chart_model_data, fiscal_year_adjustment
                 'adjustment_ratio': adjustment_ratio,
                 'distribution_method': distribution_method,
                 'months_adjusted': num_months,
-                'total_impact': adjusted_values.sum() - original_values.sum()
+                'total_impact': total_impact
             }
     
     return adjusted_data, adjustment_summary

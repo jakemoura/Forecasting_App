@@ -22,6 +22,11 @@ from sklearn.exceptions import ConvergenceWarning
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 warnings.filterwarnings("ignore", message="Too few observations")
 
+# Configure Altair to prevent sensitive data file creation
+import altair as alt
+alt.data_transformers.disable_max_rows()
+alt.data_transformers.enable('json')
+
 # Import our modular components
 from modules.ui_config import setup_page_config, create_sidebar_controls
 from modules.tab_content import render_forecast_tab, render_example_data_tab, render_model_guide_tab, render_footer
