@@ -670,17 +670,43 @@ def display_product_forecast(data, product, model_name, best_models_per_product=
         if 'config' in st.session_state and st.session_state.config:
             fiscal_year_start_month = int(st.session_state.config.get('fiscal_year_start_month', fiscal_year_start_month))
         
-        # Calculate current fiscal year dates
+        # Calculate current fiscal year dates with auto-flip logic
         now = datetime.now()
         if now.month >= fiscal_year_start_month:
-            current_fy_year = now.year + 1
+            calendar_fy_year = now.year + 1
         else:
-            current_fy_year = now.year
+            calendar_fy_year = now.year
         
-        fy_start_date = pd.Timestamp(year=current_fy_year - 1, month=fiscal_year_start_month, day=1)
-        fy_end_date = pd.Timestamp(year=current_fy_year, month=fiscal_year_start_month, day=1) - pd.DateOffset(days=1)
+        # Check if current calendar FY has complete data (all 12 months)
+        calendar_fy_start_date = pd.Timestamp(year=calendar_fy_year - 1, month=fiscal_year_start_month, day=1)
+        calendar_fy_end_date = pd.Timestamp(year=calendar_fy_year, month=fiscal_year_start_month, day=1) - pd.DateOffset(days=1)
         
-        # Filter product data for current fiscal year
+        calendar_fy_product_data = product_data[
+            (pd.to_datetime(product_data['Date']) >= calendar_fy_start_date) & 
+            (pd.to_datetime(product_data['Date']) <= calendar_fy_end_date)
+        ].copy()
+        
+        # Check months elapsed in calendar FY
+        calendar_months_elapsed = 0
+        if not calendar_fy_product_data.empty:
+            calendar_actual_rows = calendar_fy_product_data[calendar_fy_product_data['Type'].isin(['actual', 'history', 'historical'])].copy()
+            if not calendar_actual_rows.empty:
+                calendar_actual_rows['Date'] = pd.to_datetime(calendar_actual_rows['Date'])
+                calendar_actual_months = calendar_actual_rows['Date'].dt.to_period('M').unique()
+                calendar_months_elapsed = int(len(calendar_actual_months))
+        calendar_months_elapsed = min(12, max(0, calendar_months_elapsed))
+        
+        # If current FY has 0 months remaining (all 12 months have actual data), flip to next FY
+        if calendar_months_elapsed >= 12:
+            current_fy_year = calendar_fy_year + 1
+            fy_start_date = pd.Timestamp(year=current_fy_year - 1, month=fiscal_year_start_month, day=1)
+            fy_end_date = pd.Timestamp(year=current_fy_year, month=fiscal_year_start_month, day=1) - pd.DateOffset(days=1)
+        else:
+            current_fy_year = calendar_fy_year
+            fy_start_date = calendar_fy_start_date
+            fy_end_date = calendar_fy_end_date
+        
+        # Filter product data for target fiscal year
         fy_product_data = product_data[
             (pd.to_datetime(product_data['Date']) >= fy_start_date) & 
             (pd.to_datetime(product_data['Date']) <= fy_end_date)
@@ -1739,18 +1765,44 @@ def display_forecast_results():
     if 'config' in st.session_state and st.session_state.config:
         fiscal_year_start_month = int(st.session_state.config.get('fiscal_year_start_month', fiscal_year_start_month))
     
-    # Calculate current fiscal year
+    # Calculate current fiscal year based on calendar date
     now = datetime.now()
     if now.month >= fiscal_year_start_month:
-        current_fy_year = now.year + 1
+        calendar_fy_year = now.year + 1
     else:
-        current_fy_year = now.year
+        calendar_fy_year = now.year
     
-    # Determine fiscal year date range
-    fy_start_date = pd.Timestamp(year=current_fy_year - 1, month=fiscal_year_start_month, day=1)
-    fy_end_date = pd.Timestamp(year=current_fy_year, month=fiscal_year_start_month, day=1) - pd.DateOffset(days=1)
+    # Determine fiscal year date range for calendar-based FY
+    calendar_fy_start_date = pd.Timestamp(year=calendar_fy_year - 1, month=fiscal_year_start_month, day=1)
+    calendar_fy_end_date = pd.Timestamp(year=calendar_fy_year, month=fiscal_year_start_month, day=1) - pd.DateOffset(days=1)
     
-    # Calculate fiscal year totals combining actuals + forecasts
+    # Check if we have data for the full calendar-based fiscal year
+    calendar_fy_data = chart_model_data[
+        (pd.to_datetime(chart_model_data['Date']) >= calendar_fy_start_date) & 
+        (pd.to_datetime(chart_model_data['Date']) <= calendar_fy_end_date)
+    ].copy()
+    
+    # Calculate months elapsed in calendar-based FY to check if we should flip to next year
+    calendar_fy_actual_rows = calendar_fy_data[calendar_fy_data['Type'].isin(['actual', 'history', 'historical'])].copy()
+    calendar_months_elapsed = 0
+    if not calendar_fy_actual_rows.empty:
+        calendar_fy_actual_rows['Date'] = pd.to_datetime(calendar_fy_actual_rows['Date'])
+        calendar_actual_months = calendar_fy_actual_rows['Date'].dt.to_period('M').unique()
+        calendar_months_elapsed = int(len(calendar_actual_months))
+    calendar_months_elapsed = min(12, max(0, calendar_months_elapsed))
+    calendar_months_remaining = 12 - calendar_months_elapsed
+    
+    # If current FY has 0 months remaining (all 12 months have actual data), flip to next FY
+    if calendar_months_remaining == 0:
+        current_fy_year = calendar_fy_year + 1
+        fy_start_date = pd.Timestamp(year=current_fy_year - 1, month=fiscal_year_start_month, day=1)
+        fy_end_date = pd.Timestamp(year=current_fy_year, month=fiscal_year_start_month, day=1) - pd.DateOffset(days=1)
+    else:
+        current_fy_year = calendar_fy_year
+        fy_start_date = calendar_fy_start_date
+        fy_end_date = calendar_fy_end_date
+    
+    # Calculate fiscal year totals combining actuals + forecasts for the target FY
     fy_data = chart_model_data[
         (pd.to_datetime(chart_model_data['Date']) >= fy_start_date) & 
         (pd.to_datetime(chart_model_data['Date']) <= fy_end_date)
@@ -1817,6 +1869,10 @@ def display_forecast_results():
             f"📅 FY{current_fy_year}: {fy_start_date.strftime('%b %Y')} - {fy_end_date.strftime('%b %Y')} | "
             f"⏰ {months_elapsed} months elapsed, {months_remaining} months remaining"
         )
+        
+        # Show auto-flip indicator if we've switched to next FY due to complete data
+        if current_fy_year > calendar_fy_year:
+            st.info(f"🔄 **Auto-flipped to FY{current_fy_year}** - Previous fiscal year (FY{calendar_fy_year}) has complete data with 0 months remaining")
     else:
         st.info(f"ℹ️ No data available for current fiscal year (FY{current_fy_year})")
 
