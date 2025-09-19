@@ -1166,6 +1166,314 @@ def create_adjustment_controls(unique_products, forecast_dates):
     return product_adjustments
 
 
+def create_multi_fiscal_year_adjustment_controls(chart_model_data, fiscal_year_start_month=7):
+    """
+    Create multi-fiscal year YoY growth adjustment controls.
+    Detects how many fiscal years are being forecasted and allows setting
+    YoY growth targets for each fiscal year.
+    
+    Args:
+        chart_model_data: DataFrame with forecast data
+        fiscal_year_start_month: Fiscal year start month (default: 7 for July)
+    
+    Returns:
+        Dictionary of fiscal year adjustments per product
+    """
+    st.markdown("### 🎯 **Multi-Fiscal Year Growth Targets**")
+    st.markdown("Set YoY growth targets for each forecasted fiscal year.")
+    
+    # Get unique products
+    unique_products = chart_model_data["Product"].unique()
+    
+    # Analyze fiscal year coverage for each product
+    fiscal_year_analysis = analyze_fiscal_year_coverage(chart_model_data, fiscal_year_start_month)
+    
+    if not fiscal_year_analysis:
+        st.warning("⚠️ Unable to analyze fiscal year coverage from forecast data.")
+        return {}
+    
+    # Show fiscal year coverage summary
+    st.markdown("#### 📊 **Fiscal Year Coverage Analysis**")
+    
+    max_fy_years = max(len(product_info['fiscal_years']) for product_info in fiscal_year_analysis.values())
+    
+    summary_data = []
+    for product, info in fiscal_year_analysis.items():
+        fy_list = ", ".join([f"FY{fy}" for fy in sorted(info['fiscal_years'])])
+        summary_data.append({
+            'Product': product,
+            'Fiscal Years Covered': fy_list,
+            'Total FY Count': len(info['fiscal_years']),
+            'Current YoY Growth': f"{info.get('current_yoy_growth', 0):.1f}%" if info.get('current_yoy_growth') else "N/A"
+        })
+    
+    summary_df = pd.DataFrame(summary_data)
+    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    
+    st.info(f"📈 **Detected {max_fy_years} fiscal year(s)** in forecast period. Set growth targets for each year below.")
+    
+    # Create adjustment controls for each product and fiscal year
+    st.markdown("#### 🎛️ **YoY Growth Target Controls**")
+    
+    fiscal_year_adjustments = {}
+    
+    for product in unique_products:
+        with st.expander(f"📊 {product} - Fiscal Year Growth Targets", expanded=False):
+            product_info = fiscal_year_analysis.get(product, {})
+            fiscal_years = sorted(product_info.get('fiscal_years', []))
+            
+            if not fiscal_years:
+                st.warning(f"⚠️ No fiscal year data available for {product}")
+                continue
+            
+            # Show current YoY growth if available
+            current_yoy = product_info.get('current_yoy_growth')
+            if current_yoy is not None:
+                st.metric("Current Projected YoY Growth", f"{current_yoy:.1f}%")
+            
+            product_fy_adjustments = {}
+            
+            # Create controls for each fiscal year
+            fy_cols = st.columns(min(3, len(fiscal_years)))
+            
+            for i, fy_year in enumerate(fiscal_years):
+                with fy_cols[i % len(fy_cols)]:
+                    st.markdown(f"**FY{fy_year}**")
+                    
+                    # Get current YoY for this specific FY if available
+                    fy_current_yoy = product_info.get('fy_specific_yoy', {}).get(fy_year, current_yoy)
+                    if fy_current_yoy is not None:
+                        st.caption(f"Current: {fy_current_yoy:.1f}%")
+                    
+                    # Target YoY growth input
+                    target_yoy = st.number_input(
+                        f"Target YoY Growth (%)",
+                        min_value=-50.0,
+                        max_value=200.0,
+                        value=float(fy_current_yoy) if fy_current_yoy is not None else 10.0,
+                        step=1.0,
+                        key=f"fy_target_{product}_{fy_year}",
+                        help=f"Target YoY growth for FY{fy_year}"
+                    )
+                    
+                    # Enable toggle
+                    enable_fy_adjustment = st.checkbox(
+                        f"Apply",
+                        value=False,
+                        key=f"enable_fy_{product}_{fy_year}",
+                        help=f"Enable YoY growth adjustment for FY{fy_year}"
+                    )
+                    
+                    if enable_fy_adjustment:
+                        # Growth distribution method
+                        distribution_method = st.selectbox(
+                            "Distribution",
+                            options=[
+                                "Smooth", "Linear Ramp", "Exponential", 
+                                "Front-loaded", "Back-loaded"
+                            ],
+                            index=0,
+                            key=f"dist_{product}_{fy_year}",
+                            help="How to distribute growth across the fiscal year"
+                        )
+                        
+                        product_fy_adjustments[fy_year] = {
+                            'target_yoy': target_yoy,
+                            'current_yoy': fy_current_yoy,
+                            'distribution_method': distribution_method,
+                            'enabled': True
+                        }
+                        
+                        # Show adjustment summary
+                        if fy_current_yoy is not None:
+                            adjustment_needed = target_yoy - fy_current_yoy
+                            color = "success" if adjustment_needed > 0 else "error" if adjustment_needed < -1 else "info"
+                            st.write(f":{color}[{adjustment_needed:+.1f}% adjustment needed]")
+                        else:
+                            st.success(f"Target: {target_yoy:.1f}% YoY")
+                    else:
+                        product_fy_adjustments[fy_year] = {'enabled': False}
+            
+            fiscal_year_adjustments[product] = product_fy_adjustments
+    
+    return fiscal_year_adjustments
+
+
+def analyze_fiscal_year_coverage(chart_model_data, fiscal_year_start_month=7):
+    """
+    Analyze which fiscal years are covered in the forecast data.
+    
+    Args:
+        chart_model_data: DataFrame with forecast data
+        fiscal_year_start_month: Fiscal year start month
+    
+    Returns:
+        Dictionary with fiscal year analysis per product
+    """
+    analysis = {}
+    
+    for product in chart_model_data["Product"].unique():
+        product_data = chart_model_data[chart_model_data["Product"] == product].copy()
+        
+        if product_data.empty:
+            continue
+        
+        # Convert dates
+        product_data['Date'] = pd.to_datetime(product_data['Date'])
+        
+        # Separate actual and forecast data
+        actual_data = product_data[product_data['Type'].isin(['actual', 'history', 'historical'])].copy()
+        forecast_data = product_data[product_data['Type'] == 'forecast'].copy()
+        
+        # Determine fiscal years covered
+        fiscal_years_covered = set()
+        
+        # Add fiscal years from forecast data
+        if not forecast_data.empty:
+            for _, row in forecast_data.iterrows():
+                date = row['Date']
+                fy = calculate_fiscal_year(date, fiscal_year_start_month)
+                fiscal_years_covered.add(fy)
+        
+        # Calculate current YoY growth if possible
+        current_yoy_growth = None
+        if not actual_data.empty and not forecast_data.empty:
+            try:
+                # Get last 12 months of actual data
+                actual_monthly = actual_data.groupby(actual_data['Date'].dt.to_period('M'))['ACR'].sum()
+                last_12_actual = actual_monthly.tail(12).sum() if len(actual_monthly) >= 12 else None
+                
+                # Get first 12 months of forecast data
+                forecast_monthly = forecast_data.groupby(forecast_data['Date'].dt.to_period('M'))['ACR'].sum()
+                first_12_forecast = forecast_monthly.head(12).sum() if len(forecast_monthly) >= 12 else None
+                
+                if last_12_actual and first_12_forecast and last_12_actual > 0:
+                    current_yoy_growth = ((first_12_forecast / last_12_actual) - 1.0) * 100.0
+            except Exception:
+                pass
+        
+        analysis[product] = {
+            'fiscal_years': list(fiscal_years_covered),
+            'current_yoy_growth': current_yoy_growth,
+            'actual_data_available': not actual_data.empty,
+            'forecast_data_available': not forecast_data.empty
+        }
+    
+    return analysis
+
+
+def calculate_fiscal_year(date, fiscal_year_start_month=7):
+    """
+    Calculate fiscal year for a given date.
+    
+    Args:
+        date: pandas Timestamp or datetime
+        fiscal_year_start_month: Fiscal year start month
+    
+    Returns:
+        int: Fiscal year
+    """
+    date = pd.Timestamp(date)
+    
+    if date.month >= fiscal_year_start_month:
+        return date.year + 1
+    else:
+        return date.year
+
+
+def apply_multi_fiscal_year_adjustments(chart_model_data, fiscal_year_adjustments, fiscal_year_start_month=7):
+    """
+    Apply multi-fiscal year YoY growth adjustments to forecast data.
+    
+    Args:
+        chart_model_data: DataFrame with forecast data
+        fiscal_year_adjustments: Dictionary of fiscal year adjustments per product
+        fiscal_year_start_month: Fiscal year start month
+    
+    Returns:
+        DataFrame: Adjusted forecast data
+    """
+    adjusted_data = chart_model_data.copy()
+    adjustment_summary = {}
+    
+    for product, fy_adjustments in fiscal_year_adjustments.items():
+        product_mask = adjusted_data['Product'] == product
+        product_data = adjusted_data[product_mask].copy()
+        
+        if product_data.empty:
+            continue
+        
+        # Process each fiscal year adjustment
+        for fy_year, adjustment_info in fy_adjustments.items():
+            if not adjustment_info.get('enabled', False):
+                continue
+            
+            target_yoy = adjustment_info['target_yoy']
+            current_yoy = adjustment_info.get('current_yoy')
+            distribution_method = adjustment_info.get('distribution_method', 'Smooth')
+            
+            # Define fiscal year date range
+            fy_start = pd.Timestamp(year=fy_year - 1, month=fiscal_year_start_month, day=1)
+            fy_end = pd.Timestamp(year=fy_year, month=fiscal_year_start_month, day=1) - pd.DateOffset(days=1)
+            
+            # Get forecast data within this fiscal year
+            forecast_mask = (
+                (product_data['Type'] == 'forecast') &
+                (pd.to_datetime(product_data['Date']) >= fy_start) &
+                (pd.to_datetime(product_data['Date']) <= fy_end)
+            )
+            
+            fy_forecast_data = product_data[forecast_mask].copy()
+            
+            if fy_forecast_data.empty:
+                continue
+            
+            # Calculate adjustment factors
+            if current_yoy is not None:
+                # Adjust based on difference from current YoY
+                adjustment_ratio = (1 + target_yoy / 100) / (1 + current_yoy / 100)
+            else:
+                # Use target as absolute multiplier
+                adjustment_ratio = 1 + (target_yoy / 100)
+            
+            # Apply distribution method
+            num_months = len(fy_forecast_data)
+            if distribution_method == "Linear Ramp":
+                factors = np.linspace(adjustment_ratio * 0.8, adjustment_ratio * 1.2, num_months)
+            elif distribution_method == "Exponential":
+                x = np.linspace(0.5, 2.0, num_months)
+                factors = adjustment_ratio * (x / np.mean(x))
+            elif distribution_method == "Front-loaded":
+                weights = np.linspace(1.5, 0.5, num_months)
+                factors = adjustment_ratio * (weights / np.mean(weights))
+            elif distribution_method == "Back-loaded":
+                weights = np.linspace(0.5, 1.5, num_months)
+                factors = adjustment_ratio * (weights / np.mean(weights))
+            else:  # Smooth
+                factors = np.full(num_months, adjustment_ratio)
+            
+            # Apply adjustments
+            fy_forecast_indices = fy_forecast_data.index
+            original_values = adjusted_data.loc[fy_forecast_indices, 'ACR'].values
+            adjusted_values = original_values * factors
+            adjusted_data.loc[fy_forecast_indices, 'ACR'] = adjusted_values
+            
+            # Track adjustment summary
+            if product not in adjustment_summary:
+                adjustment_summary[product] = {}
+            
+            adjustment_summary[product][f"FY{fy_year}"] = {
+                'target_yoy': target_yoy,
+                'current_yoy': current_yoy,
+                'adjustment_ratio': adjustment_ratio,
+                'distribution_method': distribution_method,
+                'months_adjusted': num_months,
+                'total_impact': adjusted_values.sum() - original_values.sum()
+            }
+    
+    return adjusted_data, adjustment_summary
+
+
 def display_diagnostic_messages(messages, max_messages=10):
     """
     Display diagnostic messages in an organized format.
@@ -1636,8 +1944,22 @@ def display_forecast_results():
     # Use adjusted data if available, otherwise use original  
     if st.session_state.get('adjusted_forecast_results') is not None:
         chart_model_data = _coerce_model_data(st.session_state.adjusted_forecast_results[chart_model])
-        if any(adj != 0 for adj in st.session_state.get('product_adjustments_applied', {}).values()):
-            st.info("📊 Showing adjusted forecasts based on your custom settings")
+        
+        # Show adjustment info based on type
+        adjustment_type = st.session_state.get('adjustment_type', 'unknown')
+        
+        if adjustment_type == "manual":
+            manual_adjustments = st.session_state.get('product_adjustments_applied', {})
+            if any(adj.get('percentage', 0) != 0 for adj in manual_adjustments.values()):
+                st.info("📊 **Manual Adjustments Applied**: Showing forecasts with your custom percentage adjustments")
+        elif adjustment_type == "fiscal_year_growth":
+            fy_adjustments = st.session_state.get('fiscal_year_adjustments_applied', {})
+            enabled_products = []
+            for product, fy_adj in fy_adjustments.items():
+                if any(adj.get('enabled', False) for adj in fy_adj.values()):
+                    enabled_products.append(product)
+            if enabled_products:
+                st.success(f"🎯 **Fiscal Year Growth Targets Applied**: Showing smoothed YoY growth for {len(enabled_products)} product(s)")
     else:
         chart_model_data = _coerce_model_data(results[chart_model])
         
@@ -1892,8 +2214,19 @@ def display_forecast_results():
     st.markdown(f"Growth trends for **{chart_model}** model")
 
     # Show adjustment info if applied
-    if st.session_state.get('product_adjustments_applied') and any(adj != 0 for adj in st.session_state.get('product_adjustments_applied', {}).values()):
-        st.info("📊 Growth charts reflect your custom product adjustments")
+    adjustment_type = st.session_state.get('adjustment_type')
+    if adjustment_type == "manual" and st.session_state.get('product_adjustments_applied'):
+        manual_adjustments = st.session_state.get('product_adjustments_applied', {})
+        if any(adj.get('percentage', 0) != 0 for adj in manual_adjustments.values()):
+            st.info("📊 Growth charts reflect your custom manual adjustments")
+    elif adjustment_type == "fiscal_year_growth" and st.session_state.get('fiscal_year_adjustments_applied'):
+        fy_adjustments = st.session_state.get('fiscal_year_adjustments_applied', {})
+        enabled_products = []
+        for product, fy_adj in fy_adjustments.items():
+            if any(adj.get('enabled', False) for adj in fy_adj.values()):
+                enabled_products.append(product)
+        if enabled_products:
+            st.info(f"🎯 Growth charts reflect smoothed fiscal year growth targets for {len(enabled_products)} product(s)")
 
     # Use the same selected product for growth analysis to avoid rendering many charts at once
     product_mom = product
@@ -1902,17 +2235,29 @@ def display_forecast_results():
 
     st.markdown(f"**📊 {product_mom}**")
 
-    # Show adjustment info for this product if applied
-    if st.session_state.get('product_adjustments_applied') and product_mom in st.session_state.product_adjustments_applied:
+    # Show specific adjustment info for this product
+    if adjustment_type == "manual" and st.session_state.get('product_adjustments_applied') and product_mom in st.session_state.product_adjustments_applied:
         adj_info = st.session_state.product_adjustments_applied[product_mom]
         if isinstance(adj_info, dict):
             adj_pct = adj_info.get('percentage', 0)
             start_display = adj_info.get('start_display', 'Unknown')
             if adj_pct != 0:
                 if adj_pct > 0:
-                    st.markdown(f"*📈 +{adj_pct}% growth from {start_display}*")
+                    st.markdown(f"*📈 +{adj_pct}% manual growth from {start_display}*")
                 else:
-                    st.markdown(f"*📉 {adj_pct}% haircut from {start_display}*")
+                    st.markdown(f"*📉 {adj_pct}% manual haircut from {start_display}*")
+    elif adjustment_type == "fiscal_year_growth" and st.session_state.get('fiscal_year_adjustments_applied') and product_mom in st.session_state.fiscal_year_adjustments_applied:
+        fy_info = st.session_state.fiscal_year_adjustments_applied[product_mom]
+        enabled_fy_adjustments = []
+        for fy_year, adj_info in fy_info.items():
+            if adj_info.get('enabled', False):
+                target_yoy = adj_info['target_yoy']
+                distribution = adj_info.get('distribution_method', 'Smooth')
+                enabled_fy_adjustments.append(f"FY{fy_year}: {target_yoy:.1f}% ({distribution})")
+        
+        if enabled_fy_adjustments:
+            adjustments_text = ", ".join(enabled_fy_adjustments)
+            st.markdown(f"*🎯 Fiscal Year Growth Targets: {adjustments_text}*")
 
     try:
         df_product_mom = df_product_mom.set_index("Date")
@@ -2010,8 +2355,11 @@ def display_forecast_results():
         # Use adjusted results if available, otherwise use current forecast results (which include live conservatism)
         if st.session_state.get('adjusted_forecast_results') is not None:
             download_data = st.session_state.adjusted_forecast_results[choice]
-            if st.session_state.get('product_adjustments_applied'):
-                st.success("📊 Download includes your custom adjustments!")
+            adjustment_type = st.session_state.get('adjustment_type')
+            if adjustment_type == "manual" and st.session_state.get('product_adjustments_applied'):
+                st.success("📊 Download includes your custom manual adjustments!")
+            elif adjustment_type == "fiscal_year_growth" and st.session_state.get('fiscal_year_adjustments_applied'):
+                st.success("🎯 Download includes your fiscal year growth targets!")
         else:
             # Use session state forecast_results which includes live conservatism adjustments
             download_data = st.session_state.forecast_results[choice]
@@ -2049,25 +2397,80 @@ def display_forecast_results():
 
         # Add adjustment indicators to filename
         filename_suffix = ""
+        adjustment_type = st.session_state.get('adjustment_type')
+        
         if st.session_state.get('adjusted_forecast_results') is not None:
-            product_adjustments = st.session_state.get('product_adjustments_applied', {})
-            adjustment_percentages = []
-            for product, adj_info in product_adjustments.items():
-                if isinstance(adj_info, dict):
-                    adj_pct = adj_info.get('percentage', 0)
-                    if adj_pct != 0:
-                        adjustment_percentages.append(f"{adj_pct:+d}%")
-                else:
-                    if adj_info != 0:
-                        adjustment_percentages.append(f"{adj_info:+d}%")
+            if adjustment_type == "manual":
+                product_adjustments = st.session_state.get('product_adjustments_applied', {})
+                adjustment_percentages = []
+                for product, adj_info in product_adjustments.items():
+                    if isinstance(adj_info, dict):
+                        adj_pct = adj_info.get('percentage', 0)
+                        if adj_pct != 0 and adj_pct is not None:
+                            # Handle both int and float values with error handling
+                            try:
+                                if isinstance(adj_pct, (int, float)):
+                                    adj_str = f"{int(adj_pct):+d}"
+                                else:
+                                    adj_float = float(adj_pct)
+                                    adj_str = f"{int(adj_float):+d}"
+                                adjustment_percentages.append(f"{adj_str}%")
+                            except (ValueError, TypeError):
+                                continue
+                    else:
+                        if adj_info != 0 and adj_info is not None:
+                            # Handle both int and float values with error handling
+                            try:
+                                if isinstance(adj_info, (int, float)):
+                                    adj_str = f"{int(adj_info):+d}"
+                                else:
+                                    adj_float = float(adj_info)
+                                    adj_str = f"{int(adj_float):+d}"
+                                adjustment_percentages.append(f"{adj_str}%")
+                            except (ValueError, TypeError):
+                                continue
 
-            if adjustment_percentages:
-                filename_suffix += f"_adj{'-'.join(adjustment_percentages)}"
+                if adjustment_percentages:
+                    filename_suffix += f"_adj{'-'.join(adjustment_percentages)}"
+                    
+            elif adjustment_type == "fiscal_year_growth":
+                fy_adjustments = st.session_state.get('fiscal_year_adjustments_applied', {})
+                fy_percentages = []
+                for product, fy_info in fy_adjustments.items():
+                    if isinstance(fy_info, dict):
+                        for fy, fy_data in fy_info.items():
+                            # fy_data should be a dict with 'target_yoy', 'enabled', etc.
+                            if isinstance(fy_data, dict) and fy_data.get('enabled', False):
+                                target_yoy = fy_data.get('target_yoy', 0)
+                                if target_yoy != 0 and target_yoy is not None:
+                                    try:
+                                        if isinstance(target_yoy, (int, float)):
+                                            growth_str = f"{int(target_yoy):+d}"
+                                        else:
+                                            target_float = float(target_yoy)
+                                            growth_str = f"{int(target_float):+d}"
+                                        fy_percentages.append(f"FY{fy}_{growth_str}%")
+                                    except (ValueError, TypeError):
+                                        # Skip invalid values
+                                        continue
+                
+                if fy_percentages:
+                    filename_suffix += f"_fyGrowth_{'-'.join(fy_percentages)}"
 
         if st.session_state.get('business_adjustments_applied', False):
             growth = st.session_state.get('business_growth_used', 0)
-            if growth != 0:
-                filename_suffix += f"_biz{growth:+d}%"
+            if growth != 0 and growth is not None:
+                # Handle both int and float values with error handling
+                try:
+                    if isinstance(growth, (int, float)):
+                        growth_str = f"{int(growth):+d}"
+                    else:
+                        growth_float = float(growth)
+                        growth_str = f"{int(growth_float):+d}"
+                    filename_suffix += f"_biz{growth_str}%"
+                except (ValueError, TypeError):
+                    # Skip invalid growth values
+                    pass
 
         if st.session_state.get('yearly_renewals_applied', False):
             filename_suffix += "_YearlyRenewals"
@@ -2089,104 +2492,193 @@ def display_forecast_results():
 
         # === INTERACTIVE ADJUSTMENTS (MEDIUM PRIORITY) ===
         with st.expander("🎛️ **Interactive Forecast Adjustments**", expanded=False):
-            st.markdown("Adjust individual product forecasts with custom growth/haircut percentages:")
+            
+            # Create tabs for different adjustment types
+            tab1, tab2 = st.tabs(["📊 Manual Adjustments", "🎯 Fiscal Year Growth Targets"])
+            
+            with tab1:
+                st.markdown("Adjust individual product forecasts with custom growth/haircut percentages:")
 
-            # Get unique products from the best model results
-            best_model_data = results[best_model]
-            unique_products = best_model_data["Product"].unique()
+                # Get unique products from the best model results
+                best_model_data = results[best_model]
+                unique_products = best_model_data["Product"].unique()
 
-            # Get forecast date range for start month options
-            forecast_dates = best_model_data[best_model_data["Type"] == "forecast"]["Date"].unique()
-            forecast_dates = sorted(forecast_dates)
+                # Get forecast date range for start month options
+                forecast_dates = best_model_data[best_model_data["Type"] == "forecast"]["Date"].unique()
+                forecast_dates = sorted(forecast_dates)
 
-            # Create month-year options for dropdown
-            month_year_options = []
-            for date in forecast_dates:
-                date_obj = pd.to_datetime(date)
-                month_year = date_obj.strftime("%B %Y")  # e.g., "January 2024"
-                month_year_options.append((month_year, date))
+                # Create month-year options for dropdown
+                month_year_options = []
+                for date in forecast_dates:
+                    date_obj = pd.to_datetime(date)
+                    month_year = date_obj.strftime("%B %Y")  # e.g., "January 2024"
+                    month_year_options.append((month_year, date))
 
-            # Create adjustment controls in columns
-            adjustment_cols = st.columns(min(3, len(unique_products)))
-            product_adjustments = {}
+                # Create adjustment controls in columns
+                adjustment_cols = st.columns(min(3, len(unique_products)))
+                product_adjustments = {}
 
-            for i, product in enumerate(unique_products):
-                with adjustment_cols[i % len(adjustment_cols)]:
-                    st.subheader(f"📊 {product}")
+                for i, product in enumerate(unique_products):
+                    with adjustment_cols[i % len(adjustment_cols)]:
+                        st.subheader(f"📊 {product}")
 
-                    # Start month dropdown
-                    start_month_display = st.selectbox(
-                        "Start Month",
-                        options=[option[0] for option in month_year_options],
-                        index=0,
-                        key=f"start_{product}",
-                        help="Select when the adjustment should begin"
-                    )
+                        # Start month dropdown
+                        start_month_display = st.selectbox(
+                            "Start Month",
+                            options=[option[0] for option in month_year_options],
+                            index=0,
+                            key=f"start_{product}",
+                            help="Select when the adjustment should begin"
+                        )
 
-                    # Get the actual date for the selected month
-                    start_date = next(option[1] for option in month_year_options if option[0] == start_month_display)
+                        # Get the actual date for the selected month
+                        start_date = next(option[1] for option in month_year_options if option[0] == start_month_display)
 
-                    adjustment_pct = st.slider(
-                        f"Adjustment %",
-                        min_value=-50,
-                        max_value=200,
-                        value=0,
-                        step=5,
-                        key=f"adj_{product}",
-                        help=f"Positive values = growth, negative values = haircut"
-                    )
+                        adjustment_pct = st.slider(
+                            f"Adjustment %",
+                            min_value=-50,
+                            max_value=200,
+                            value=0,
+                            step=5,
+                            key=f"adj_{product}",
+                            help=f"Positive values = growth, negative values = haircut"
+                        )
 
-                    product_adjustments[product] = {
-                        'percentage': adjustment_pct,
-                        'start_date': start_date,
-                        'start_display': start_month_display
-                    }
+                        product_adjustments[product] = {
+                            'percentage': adjustment_pct,
+                            'start_date': start_date,
+                            'start_display': start_month_display
+                        }
 
-                    # Show the adjustment impact
-                    if adjustment_pct > 0:
-                        st.success(f"📈 +{adjustment_pct}% growth from {start_month_display}")
-                    elif adjustment_pct < 0:
-                        st.error(f"📉 {adjustment_pct}% haircut from {start_month_display}")
-                    else:
-                        st.info("🔄 No adjustment")
+                        # Show the adjustment impact
+                        if adjustment_pct > 0:
+                            st.success(f"📈 +{adjustment_pct}% growth from {start_month_display}")
+                        elif adjustment_pct < 0:
+                            st.error(f"📉 {adjustment_pct}% haircut from {start_month_display}")
+                        else:
+                            st.info("🔄 No adjustment")
 
-            # Apply adjustments if any are non-zero
-            any_adjustments = any(adj['percentage'] != 0 for adj in product_adjustments.values())
+                # Apply adjustments if any are non-zero
+                any_manual_adjustments = any(adj['percentage'] != 0 for adj in product_adjustments.values())
 
-            if any_adjustments:
-                st.info("🔧 Forecast adjustments are active. Download will include adjusted values.")
+                if any_manual_adjustments:
+                    st.info("🔧 Manual forecast adjustments are active. Download will include adjusted values.")
 
-                # Create adjusted results for download
-                adjusted_results = {}
-                for model_name, model_data in results.items():
-                    adjusted_model_data = model_data.copy()
+                    # Create adjusted results for download using the original logic
+                    adjusted_results = {}
+                    for model_name, model_data in results.items():
+                        adjusted_model_data = model_data.copy()
 
-                    for product, adjustment_info in product_adjustments.items():
-                        adjustment_pct = adjustment_info['percentage']
-                        start_date = adjustment_info['start_date']
+                        for product, adjustment_info in product_adjustments.items():
+                            adjustment_pct = adjustment_info['percentage']
+                            start_date = adjustment_info['start_date']
 
-                        if adjustment_pct != 0:
-                            # Apply adjustment only to forecast rows for this product starting from the specified date
-                            mask = (
-                                (adjusted_model_data["Product"] == product) &
-                                (adjusted_model_data["Type"] == "forecast") &
-                                (adjusted_model_data["Date"] >= start_date)
-                            )
-                            if mask.any():
-                                multiplier = 1 + (adjustment_pct / 100)
-                                adjusted_model_data.loc[mask, "ACR"] = adjusted_model_data.loc[mask, "ACR"] * multiplier
+                            if adjustment_pct != 0:
+                                # Apply adjustment only to forecast rows for this product starting from the specified date
+                                mask = (
+                                    (adjusted_model_data["Product"] == product) &
+                                    (adjusted_model_data["Type"] == "forecast") &
+                                    (adjusted_model_data["Date"] >= start_date)
+                                )
+                                if mask.any():
+                                    multiplier = 1 + (adjustment_pct / 100)
+                                    adjusted_model_data.loc[mask, "ACR"] = adjusted_model_data.loc[mask, "ACR"] * multiplier
 
-                    adjusted_results[model_name] = adjusted_model_data
+                        adjusted_results[model_name] = adjusted_model_data
 
-                # Store adjusted results for download
-                st.session_state.adjusted_forecast_results = adjusted_results
-                st.session_state.product_adjustments_applied = product_adjustments
-            else:
-                # No adjustments, use original results
-                if 'adjusted_forecast_results' in st.session_state:
-                    del st.session_state['adjusted_forecast_results']
-                if 'product_adjustments_applied' in st.session_state:
-                    del st.session_state['product_adjustments_applied']
+                    # Store adjusted results for download
+                    st.session_state.adjusted_forecast_results = adjusted_results
+                    st.session_state.product_adjustments_applied = product_adjustments
+                    st.session_state.adjustment_type = "manual"
+            
+            with tab2:
+                # Multi-Fiscal Year Growth Target Controls
+                fiscal_year_start_month = st.session_state.get('fiscal_year_start_month', 7)
+                if 'config' in st.session_state and st.session_state.config:
+                    fiscal_year_start_month = int(st.session_state.config.get('fiscal_year_start_month', fiscal_year_start_month))
+                
+                # Use original data for YoY calculations, not adjusted data
+                original_chart_data = _coerce_model_data(results[chart_model])
+                
+                fiscal_year_adjustments = create_multi_fiscal_year_adjustment_controls(
+                    original_chart_data, fiscal_year_start_month
+                )
+                
+                # Apply fiscal year adjustments if any are enabled
+                any_fy_adjustments = any(
+                    any(fy_adj.get('enabled', False) for fy_adj in product_fy_adj.values())
+                    for product_fy_adj in fiscal_year_adjustments.values()
+                )
+                
+                if any_fy_adjustments:
+                    st.info("🎯 Fiscal year growth target adjustments are active. Download will include adjusted values.")
+                    
+                    # Apply fiscal year adjustments to all models
+                    fy_adjusted_results = {}
+                    adjustment_summary = {}
+                    
+                    for model_name, model_data in results.items():
+                        fy_adjusted_data, adj_summary = apply_multi_fiscal_year_adjustments(
+                            model_data, fiscal_year_adjustments, fiscal_year_start_month
+                        )
+                        fy_adjusted_results[model_name] = fy_adjusted_data
+                        if adj_summary:
+                            adjustment_summary.update(adj_summary)
+                    
+                    # Store fiscal year adjusted results
+                    st.session_state.adjusted_forecast_results = fy_adjusted_results
+                    st.session_state.fiscal_year_adjustments_applied = fiscal_year_adjustments
+                    st.session_state.fiscal_year_adjustment_summary = adjustment_summary
+                    st.session_state.adjustment_type = "fiscal_year_growth"
+                    
+                    # Force rerun to update KPIs and charts
+                    st.rerun()
+                    
+                    # Show summary of applied adjustments
+                    if adjustment_summary:
+                        st.markdown("#### 📊 **Applied Fiscal Year Growth Targets:**")
+                        for product, fy_adjustments in adjustment_summary.items():
+                            with st.expander(f"📈 {product} Adjustments", expanded=False):
+                                for fy_label, adj_info in fy_adjustments.items():
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        st.metric(f"{fy_label} Target", f"{adj_info['target_yoy']:.1f}%")
+                                    with col2:
+                                        current = adj_info.get('current_yoy')
+                                        if current is not None:
+                                            st.metric("Previous", f"{current:.1f}%")
+                                        else:
+                                            st.metric("Previous", "N/A")
+                                    with col3:
+                                        impact = adj_info['total_impact']
+                                        st.metric("Impact", f"${impact/1e6:+.1f}M")
+                                    
+                                    st.caption(f"Distribution: {adj_info['distribution_method']} | Months: {adj_info['months_adjusted']}")
+                else:
+                    # No fiscal year adjustments, clear any existing ones
+                    needs_rerun = False
+                    if 'fiscal_year_adjustments_applied' in st.session_state:
+                        del st.session_state['fiscal_year_adjustments_applied']
+                        needs_rerun = True
+                    if 'fiscal_year_adjustment_summary' in st.session_state:
+                        del st.session_state['fiscal_year_adjustment_summary']
+                        needs_rerun = True
+                    
+                    # If no manual adjustments either, clear all adjustments
+                    if not any_manual_adjustments:
+                        if 'adjusted_forecast_results' in st.session_state:
+                            del st.session_state['adjusted_forecast_results']
+                            needs_rerun = True
+                        if 'product_adjustments_applied' in st.session_state:
+                            del st.session_state['product_adjustments_applied']
+                            needs_rerun = True
+                        if 'adjustment_type' in st.session_state:
+                            del st.session_state['adjustment_type']
+                            needs_rerun = True
+                    
+                    # Force rerun to update KPIs when clearing adjustments
+                    if needs_rerun:
+                        st.rerun()
 
         # === TECHNICAL DETAILS (LOW PRIORITY - EXPANDABLE) ===
 
