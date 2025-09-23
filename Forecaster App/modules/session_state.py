@@ -9,6 +9,34 @@ import streamlit as st
 import numpy as np
 
 
+def cleanup_invalid_session_state():
+    """
+    Clean up invalid session state entries that might cause MediaFileStorageError.
+    This prevents errors when uploaded files are no longer available in memory.
+    """
+    # Keys that might contain file references that could become invalid
+    file_related_keys = [
+        'yearly_renewals_file',
+        'uploaded_file_reference',
+        'last_uploaded_file_object'
+    ]
+    
+    for key in file_related_keys:
+        if key in st.session_state:
+            try:
+                # Try to access the file object to see if it's still valid
+                file_obj = st.session_state[key]
+                if hasattr(file_obj, 'name'):
+                    # If it has a name, try to access it
+                    _ = file_obj.name
+            except (KeyError, AttributeError, Exception):
+                # If accessing the file object fails, remove it from session state
+                try:
+                    del st.session_state[key]
+                except KeyError:
+                    pass
+
+
 def store_forecast_results(results, avg_mapes, avg_smapes, avg_rmses, avg_mases, 
                           product_mapes, product_smapes, product_mases, product_rmses,
                           best_models_per_product, best_mapes_per_product, 
@@ -141,6 +169,10 @@ def clear_session_state_for_new_forecast():
 
 def initialize_session_state_variables():
     """Initialize all session state variables if they don't exist."""
+    
+    # Clean up any invalid session state first
+    cleanup_invalid_session_state()
+    
     session_vars = [
         'forecast_results', 'forecast_mapes', 'forecast_smapes', 
         'forecast_mases', 'forecast_rmses', 'forecast_sarima_params', 

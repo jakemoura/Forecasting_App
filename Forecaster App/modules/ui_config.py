@@ -188,15 +188,24 @@ def create_renewals_upload_section():
         )
         
         if yearly_renewals_file:
-            st.success(f"✅ Uploaded: {yearly_renewals_file.name}")
-            st.session_state['yearly_renewals_file'] = yearly_renewals_file
-            st.session_state['yearly_renewals_filename'] = yearly_renewals_file.name
+            try:
+                st.success(f"✅ Uploaded: {yearly_renewals_file.name}")
+                st.session_state['yearly_renewals_file'] = yearly_renewals_file
+                st.session_state['yearly_renewals_filename'] = yearly_renewals_file.name
+            except Exception as e:
+                st.error(f"❌ Error processing upload: {str(e)}")
+                # Clear potentially corrupted session state
+                for key in ['yearly_renewals_file', 'yearly_renewals_filename']:
+                    if key in st.session_state:
+                        del st.session_state[key]
         else:
             # Clear session state if no file is uploaded
-            if 'yearly_renewals_file' in st.session_state:
-                del st.session_state['yearly_renewals_file']
-            if 'yearly_renewals_filename' in st.session_state:
-                del st.session_state['yearly_renewals_filename']
+            for key in ['yearly_renewals_file', 'yearly_renewals_filename']:
+                if key in st.session_state:
+                    try:
+                        del st.session_state[key]
+                    except KeyError:
+                        pass
     
     return yearly_renewals_file
 
@@ -485,19 +494,19 @@ def display_upload_section():
     
     # AUTO-ANALYSIS: Run immediately after upload
     if uploaded is not None:
-        # Prevent infinite rerun loop by short‑circuiting once after refresh
-        if st.session_state.get('analysis_rerun_pending', False):
-            st.session_state['analysis_rerun_pending'] = False
-            # Do not re-run analysis; continue to render the run button below
-        # If this exact file was already analyzed, skip re-analysis
-        if (
-            st.session_state.get('data_analysis_complete')
-            and st.session_state.get('last_uploaded_file') == uploaded.name
-            and st.session_state.get('last_uploaded_size') == uploaded.size
-        ):
-            pass
-        else:
-            try:
+        try:
+            # Prevent infinite rerun loop by short‑circuiting once after refresh
+            if st.session_state.get('analysis_rerun_pending', False):
+                st.session_state['analysis_rerun_pending'] = False
+                # Do not re-run analysis; continue to render the run button below
+            # If this exact file was already analyzed, skip re-analysis
+            elif (
+                st.session_state.get('data_analysis_complete')
+                and st.session_state.get('last_uploaded_file') == uploaded.name
+                and st.session_state.get('last_uploaded_size') == uploaded.size
+            ):
+                pass
+            else:
                 # Import here to avoid circular imports
                 from .utils import read_any_excel
                 from .data_validation import (
@@ -542,12 +551,19 @@ def display_upload_section():
                 st.session_state['analysis_rerun_pending'] = True
                 st.rerun()
 
-            except ValueError as e:
-                st.error(f"❌ **Data Error**: {str(e)}")
-                return uploaded, None
-            except Exception as e:
-                st.error(f"❌ **Upload Error**: {str(e)}")
-                return uploaded, None
+        except ValueError as e:
+            st.error(f"❌ **Data Error**: {str(e)}")
+            return uploaded, None
+        except Exception as e:
+            st.error(f"❌ **File Processing Error**: Unable to process uploaded file. Please try uploading again.")
+            # Clear potentially corrupted session state
+            for key in ['last_uploaded_file', 'last_uploaded_size', 'data_analysis_complete']:
+                if key in st.session_state:
+                    try:
+                        del st.session_state[key]
+                    except KeyError:
+                        pass
+            return uploaded, None
     
     # If we have prior analysis (e.g., after rerun), render it above the button
     if st.session_state.get('last_data_analysis') is not None and st.session_state.get('last_overall_status') is not None:
