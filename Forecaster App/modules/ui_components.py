@@ -1467,10 +1467,11 @@ def apply_multi_fiscal_year_adjustments(chart_model_data, fiscal_year_adjustment
         if product_data.empty:
             continue
         
-        # Process each fiscal year adjustment
-        for fy_year, adjustment_info in fy_adjustments.items():
-            if not adjustment_info.get('enabled', False):
-                continue
+        # Process fiscal years in chronological order to ensure proper YoY compounding
+        sorted_fy_years = sorted([fy for fy, adj in fy_adjustments.items() if adj.get('enabled', False)])
+        
+        for fy_year in sorted_fy_years:
+            adjustment_info = fy_adjustments[fy_year]
             
             target_yoy = adjustment_info['target_yoy']
             current_yoy = adjustment_info.get('current_yoy')
@@ -1480,25 +1481,53 @@ def apply_multi_fiscal_year_adjustments(chart_model_data, fiscal_year_adjustment
             fy_start = pd.Timestamp(year=fy_year - 1, month=fiscal_year_start_month, day=1)
             fy_end = pd.Timestamp(year=fy_year, month=fiscal_year_start_month, day=1) - pd.DateOffset(days=1)
             
-            # Get forecast data within this fiscal year
+            # Get forecast data within this fiscal year (from the adjusted data, not original)
             forecast_mask = (
-                (product_data['Type'] == 'forecast') &
-                (pd.to_datetime(product_data['Date']) >= fy_start) &
-                (pd.to_datetime(product_data['Date']) <= fy_end)
+                (adjusted_data['Product'] == product) &
+                (adjusted_data['Type'] == 'forecast') &
+                (pd.to_datetime(adjusted_data['Date']) >= fy_start) &
+                (pd.to_datetime(adjusted_data['Date']) <= fy_end)
             )
             
-            fy_forecast_data = product_data[forecast_mask].copy()
+            fy_forecast_data = adjusted_data[forecast_mask].copy()
             
             if fy_forecast_data.empty:
                 continue
             
-            # Calculate adjustment factors
-            if current_yoy is not None:
-                # Adjust based on difference from current YoY
-                adjustment_ratio = (1 + target_yoy / 100) / (1 + current_yoy / 100)
+            # For sequential processing, we need to calculate YoY relative to the previous FY
+            # Get the previous fiscal year's total for comparison
+            prev_fy_year = fy_year - 1
+            prev_fy_start = pd.Timestamp(year=prev_fy_year - 1, month=fiscal_year_start_month, day=1)
+            prev_fy_end = pd.Timestamp(year=prev_fy_year, month=fiscal_year_start_month, day=1) - pd.DateOffset(days=1)
+            
+            # Get previous FY data from adjusted data (to account for previous adjustments)
+            prev_fy_mask = (
+                (adjusted_data['Product'] == product) &
+                (pd.to_datetime(adjusted_data['Date']) >= prev_fy_start) &
+                (pd.to_datetime(adjusted_data['Date']) <= prev_fy_end)
+            )
+            
+            prev_fy_data = adjusted_data[prev_fy_mask]
+            
+            # Calculate the target multiplier for this fiscal year
+            target_multiplier = 1 + (target_yoy / 100)
+            
+            if not prev_fy_data.empty:
+                # Calculate current YoY based on current adjusted values
+                current_fy_total = fy_forecast_data['ACR'].sum()
+                prev_fy_total = prev_fy_data['ACR'].sum()
+                
+                if prev_fy_total > 0:
+                    current_yoy_actual = ((current_fy_total / prev_fy_total) - 1) * 100
+                    adjustment_ratio = target_multiplier / (1 + current_yoy_actual / 100)
+                else:
+                    adjustment_ratio = target_multiplier
             else:
-                # Use target as absolute multiplier
-                adjustment_ratio = 1 + (target_yoy / 100)
+                # First fiscal year or no previous data, use target as absolute multiplier
+                if current_yoy is not None:
+                    adjustment_ratio = target_multiplier / (1 + current_yoy / 100)
+                else:
+                    adjustment_ratio = target_multiplier
             
             # Apply distribution method
             num_months = len(fy_forecast_data)
