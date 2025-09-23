@@ -1180,7 +1180,24 @@ def create_multi_fiscal_year_adjustment_controls(chart_model_data, fiscal_year_s
         Dictionary of fiscal year adjustments per product
     """
     st.markdown("### 🎯 **Multi-Fiscal Year Growth Targets**")
-    st.markdown("Set YoY growth targets for each forecasted fiscal year.")
+    
+    # Add clear button
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown("Set YoY growth targets for each forecasted fiscal year.")
+    with col2:
+        if st.button("🗑️ Clear All", key="clear_fy_adjustments", help="Clear all fiscal year adjustments"):
+            # Clear all fiscal year adjustment-related session state
+            keys_to_clear = [
+                'fiscal_year_adjustments_applied',
+                'fiscal_year_adjustment_summary',
+                'adjusted_forecast_results',
+                'adjustment_type'
+            ]
+            for key in keys_to_clear:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
     
     # Get unique products
     unique_products = chart_model_data["Product"].unique()
@@ -1211,6 +1228,26 @@ def create_multi_fiscal_year_adjustment_controls(chart_model_data, fiscal_year_s
     st.dataframe(summary_df, use_container_width=True, hide_index=True)
     
     st.info(f"📈 **Detected {max_fy_years} fiscal year(s)** in forecast period. Set growth targets for each year below.")
+    
+    # Debug information (can be removed later)
+    if st.checkbox("🔍 Show Debug Info", value=False, key="debug_fy_adjustments"):
+        st.write("**Current Session State:**")
+        stored_adjustments = st.session_state.get('fiscal_year_adjustments_applied', {})
+        st.write(f"Stored adjustments: {len(stored_adjustments)} products")
+        for prod, adj in stored_adjustments.items():
+            enabled_fys = [fy for fy, info in adj.items() if info.get('enabled', False)]
+            st.write(f"- {prod}: {enabled_fys} fiscal years enabled")
+        
+        st.write(f"**Current Form State:**")
+        current_enabled = []
+        for product in unique_products:
+            product_info = fiscal_year_analysis.get(product, {})
+            fiscal_years = sorted(product_info.get('fiscal_years', []))
+            for fy_year in fiscal_years:
+                key = f"enable_fy_{product}_{fy_year}"
+                if key in st.session_state and st.session_state[key]:
+                    current_enabled.append(f"{product}-FY{fy_year}")
+        st.write(f"Currently enabled: {current_enabled}")
     
     # Create adjustment controls for each product and fiscal year
     st.markdown("#### 🎛️ **YoY Growth Target Controls**")
@@ -1245,34 +1282,61 @@ def create_multi_fiscal_year_adjustment_controls(chart_model_data, fiscal_year_s
                     if fy_current_yoy is not None:
                         st.caption(f"Current: {fy_current_yoy:.1f}%")
                     
+                    # Get stored adjustments for persistence (defined once)
+                    stored_adjustments = st.session_state.get('fiscal_year_adjustments_applied', {})
+                    
+                    # Get previously stored target value if available
+                    stored_target = None
+                    if (product in stored_adjustments and
+                        fy_year in stored_adjustments[product] and
+                        stored_adjustments[product][fy_year].get('enabled', False)):
+                        stored_target = stored_adjustments[product][fy_year].get('target_yoy')
+                    
                     # Target YoY growth input
+                    default_value = stored_target if stored_target is not None else (float(fy_current_yoy) if fy_current_yoy is not None else 10.0)
                     target_yoy = st.number_input(
                         f"Target YoY Growth (%)",
                         min_value=-50.0,
                         max_value=200.0,
-                        value=float(fy_current_yoy) if fy_current_yoy is not None else 10.0,
+                        value=default_value,
                         step=1.0,
                         key=f"fy_target_{product}_{fy_year}",
                         help=f"Target YoY growth for FY{fy_year}"
                     )
                     
-                    # Enable toggle
+                    # Check if this adjustment was previously enabled (for persistence)
+                    was_previously_enabled = (
+                        product in stored_adjustments and
+                        fy_year in stored_adjustments[product] and
+                        stored_adjustments[product][fy_year].get('enabled', False)
+                    )
+                    
+                    # Enable toggle with persistence
                     enable_fy_adjustment = st.checkbox(
                         f"Apply",
-                        value=False,
+                        value=was_previously_enabled,
                         key=f"enable_fy_{product}_{fy_year}",
                         help=f"Enable YoY growth adjustment for FY{fy_year}"
                     )
                     
                     if enable_fy_adjustment:
+                        # Get previously stored distribution method if available
+                        stored_distribution = None
+                        if (product in stored_adjustments and
+                            fy_year in stored_adjustments[product] and
+                            stored_adjustments[product][fy_year].get('enabled', False)):
+                            stored_distribution = stored_adjustments[product][fy_year].get('distribution_method', 'Smooth')
+                        
                         # Growth distribution method
+                        distribution_options = ["Smooth", "Linear Ramp", "Exponential", "Front-loaded", "Back-loaded"]
+                        default_index = 0
+                        if stored_distribution and stored_distribution in distribution_options:
+                            default_index = distribution_options.index(stored_distribution)
+                        
                         distribution_method = st.selectbox(
                             "Distribution",
-                            options=[
-                                "Smooth", "Linear Ramp", "Exponential", 
-                                "Front-loaded", "Back-loaded"
-                            ],
-                            index=0,
+                            options=distribution_options,
+                            index=default_index,
                             key=f"dist_{product}_{fy_year}",
                             help="How to distribute growth across the fiscal year"
                         )
@@ -2637,31 +2701,42 @@ def display_forecast_results():
                     for product_fy_adj in fiscal_year_adjustments.values()
                 )
                 
+                # Check if current fiscal year adjustments differ from stored ones
+                stored_fy_adjustments = st.session_state.get('fiscal_year_adjustments_applied', {})
+                fy_adjustments_changed = (fiscal_year_adjustments != stored_fy_adjustments)
+                
                 if any_fy_adjustments:
                     st.info("🎯 Fiscal year growth target adjustments are active. Download will include adjusted values.")
                     
-                    # Apply fiscal year adjustments to all models
-                    fy_adjusted_results = {}
-                    adjustment_summary = {}
-                    
-                    for model_name, model_data in results.items():
-                        fy_adjusted_data, adj_summary = apply_multi_fiscal_year_adjustments(
-                            model_data, fiscal_year_adjustments, fiscal_year_start_month
-                        )
-                        fy_adjusted_results[model_name] = fy_adjusted_data
-                        if adj_summary:
-                            adjustment_summary.update(adj_summary)
-                    
-                    # Store fiscal year adjusted results
-                    st.session_state.adjusted_forecast_results = fy_adjusted_results
-                    st.session_state.fiscal_year_adjustments_applied = fiscal_year_adjustments
-                    st.session_state.fiscal_year_adjustment_summary = adjustment_summary
-                    st.session_state.adjustment_type = "fiscal_year_growth"
-                    
-                    # Force rerun to update KPIs and charts
-                    st.rerun()
+                    # Only recalculate and rerun if adjustments have changed
+                    if fy_adjustments_changed or 'adjusted_forecast_results' not in st.session_state:
+                        # Apply fiscal year adjustments to all models
+                        fy_adjusted_results = {}
+                        adjustment_summary = {}
+                        
+                        for model_name, model_data in results.items():
+                            fy_adjusted_data, adj_summary = apply_multi_fiscal_year_adjustments(
+                                model_data, fiscal_year_adjustments, fiscal_year_start_month
+                            )
+                            fy_adjusted_results[model_name] = fy_adjusted_data
+                            if adj_summary:
+                                adjustment_summary.update(adj_summary)
+                        
+                        # Store fiscal year adjusted results
+                        st.session_state.adjusted_forecast_results = fy_adjusted_results
+                        st.session_state.fiscal_year_adjustments_applied = fiscal_year_adjustments
+                        st.session_state.fiscal_year_adjustment_summary = adjustment_summary
+                        st.session_state.adjustment_type = "fiscal_year_growth"
+                        
+                        # Clear any manual adjustments to avoid conflicts
+                        if 'product_adjustments_applied' in st.session_state:
+                            del st.session_state['product_adjustments_applied']
+                        
+                        # Force rerun to update KPIs and charts
+                        st.rerun()
                     
                     # Show summary of applied adjustments
+                    adjustment_summary = st.session_state.get('fiscal_year_adjustment_summary', {})
                     if adjustment_summary:
                         st.markdown("#### 📊 **Applied Fiscal Year Growth Targets:**")
                         for product, fy_adjustments in adjustment_summary.items():
@@ -2682,30 +2757,28 @@ def display_forecast_results():
                                     
                                     st.caption(f"Distribution: {adj_info['distribution_method']} | Months: {adj_info['months_adjusted']}")
                 else:
-                    # No fiscal year adjustments, clear any existing ones
+                    # Only clear fiscal year adjustments if there were previously some applied
                     needs_rerun = False
-                    if 'fiscal_year_adjustments_applied' in st.session_state:
-                        del st.session_state['fiscal_year_adjustments_applied']
-                        needs_rerun = True
-                    if 'fiscal_year_adjustment_summary' in st.session_state:
-                        del st.session_state['fiscal_year_adjustment_summary']
-                        needs_rerun = True
-                    
-                    # If no manual adjustments either, clear all adjustments
-                    if not any_manual_adjustments:
-                        if 'adjusted_forecast_results' in st.session_state:
-                            del st.session_state['adjusted_forecast_results']
+                    if st.session_state.get('adjustment_type') == "fiscal_year_growth":
+                        if 'fiscal_year_adjustments_applied' in st.session_state:
+                            del st.session_state['fiscal_year_adjustments_applied']
                             needs_rerun = True
-                        if 'product_adjustments_applied' in st.session_state:
-                            del st.session_state['product_adjustments_applied']
+                        if 'fiscal_year_adjustment_summary' in st.session_state:
+                            del st.session_state['fiscal_year_adjustment_summary']
                             needs_rerun = True
-                        if 'adjustment_type' in st.session_state:
-                            del st.session_state['adjustment_type']
-                            needs_rerun = True
-                    
-                    # Force rerun to update KPIs when clearing adjustments
-                    if needs_rerun:
-                        st.rerun()
+                        
+                        # If no manual adjustments either, clear all adjustments
+                        if not any_manual_adjustments:
+                            if 'adjusted_forecast_results' in st.session_state:
+                                del st.session_state['adjusted_forecast_results']
+                                needs_rerun = True
+                            if 'adjustment_type' in st.session_state:
+                                del st.session_state['adjustment_type']
+                                needs_rerun = True
+                        
+                        # Force rerun to update KPIs when clearing adjustments
+                        if needs_rerun:
+                            st.rerun()
 
         # === TECHNICAL DETAILS (LOW PRIORITY - EXPANDABLE) ===
 
