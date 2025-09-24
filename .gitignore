@@ -20,6 +20,8 @@ altair-data-*.json
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
+*.pyo
 
 # Distribution / packaging
 .Python
