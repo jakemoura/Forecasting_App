@@ -1348,13 +1348,21 @@ def create_multi_fiscal_year_adjustment_controls(chart_model_data, fiscal_year_s
                             'enabled': True
                         }
                         
-                        # Show adjustment summary
-                        if fy_current_yoy is not None:
-                            adjustment_needed = target_yoy - fy_current_yoy
-                            color = "success" if adjustment_needed > 0 else "error" if adjustment_needed < -1 else "info"
-                            st.write(f":{color}[{adjustment_needed:+.1f}% adjustment needed]")
-                        else:
-                            st.success(f"Target: {target_yoy:.1f}% YoY")
+                        # Show adjustment summary with better error handling
+                        try:
+                            if fy_current_yoy is not None and not pd.isna(fy_current_yoy):
+                                adjustment_needed = target_yoy - fy_current_yoy
+                                if adjustment_needed > 0:
+                                    st.success(f"📈 +{adjustment_needed:.1f}% adjustment needed")
+                                elif adjustment_needed < -1:
+                                    st.error(f"📉 {adjustment_needed:+.1f}% adjustment needed")
+                                else:
+                                    st.info(f"📊 {adjustment_needed:+.1f}% adjustment needed")
+                            else:
+                                st.info(f"🎯 Target: {target_yoy:.1f}% YoY")
+                        except Exception as e:
+                            # Fallback to simple target display if there's any calculation error
+                            st.info(f"🎯 Target: {target_yoy:.1f}% YoY")
                     else:
                         product_fy_adjustments[fy_year] = {'enabled': False}
             
@@ -1569,7 +1577,6 @@ def apply_multi_fiscal_year_adjustments(chart_model_data, fiscal_year_adjustment
                 adjusted_data.loc[fy_forecast_indices, 'ACR'] = adjusted_values
             except Exception as e:
                 # Skip this adjustment if there's still a dimension mismatch
-                print(f"Warning: Could not apply adjustment for {product} FY{fy_year}: {e}")
                 continue
             
             # Track adjustment summary
