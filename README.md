@@ -1,9 +1,17 @@
 # Advanced Forecasting Applications
 
-Two professional-grade Streamlit applications for business revenue forecasting:
+Two professional-grade Streamlit applications for business revenue forecasting with enhanced multi-fiscal year planning:
 
-- **Forecaster App**: Multi-model time-series forecasting with rigorous backtesting, WAPE-optimized selection, and business-aware model ranking
+- **Forecaster App**: Multi-model time-series forecasting with rigorous backtesting, WAPE-optimized selection, sequential YoY compounding, and business-aware model ranking
 - **Quarter Outlook Forecaster**: Daily-to-quarterly projection with enhanced backtesting validation, WAPE-first accuracy, fiscal calendar support, and renewal/capacity modeling
+
+## 🚀 Latest Release: v1.2.0 - Enhanced Multi-Fiscal Year Forecasting
+
+### 🎯 New: Sequential YoY Compounding
+- **Multi-fiscal year adjustments** now properly compound across sequential years
+- **Proper baseline calculation** - each year builds from previous year's adjusted values
+- **Universal product support** - all products apply fiscal year changes to charts AND export data
+- **Enhanced reliability** - comprehensive error handling prevents crashes and data corruption
 
 ## Key Features
 
@@ -17,9 +25,10 @@ Two professional-grade Streamlit applications for business revenue forecasting:
 
 ### Forecaster App (Monthly/Weekly Data)
 - **🔮 Advanced Models**: SARIMA (AIC/BIC), ETS, Prophet (holidays), Auto-ARIMA, LightGBM, Seasonal-Naive
-- **🎯 Interactive Adjustments**: Management overrides, growth assumptions, scenario planning
-- **🎛️ Live Conservatism**: Real-time forecast adjustment slider (90-110%) without re-running models
-- **📋 Comprehensive Reporting**: Product-level breakdowns with confidence intervals
+- **🎯 Sequential Multi-Fiscal Year Adjustments**: Proper compounding across years with baseline updating
+- **🎛️ Universal Product Support**: All products apply adjustments to both visualizations AND export data
+- **🛡️ Enhanced Error Handling**: Automatic session cleanup prevents MediaFileStorageError crashes
+- **📋 Comprehensive Reporting**: Product-level breakdowns with confidence intervals and improved stability
 
 ### Quarter Outlook Forecaster (Daily Data)
 - **🗓️ Fiscal Calendar Integration**: July-June fiscal year calendar (Q1: Jul-Sep, Q2: Oct-Dec, Q3: Jan-Mar, Q4: Apr-Jun)
@@ -44,7 +53,7 @@ Two professional-grade Streamlit applications for business revenue forecasting:
 
 **⚠️ Important**: Run .BAT files from File Explorer, not web browsers.
 
-**🚀 New Features**: Both apps now feature enhanced backtesting validation, WAPE-first accuracy, and visual chart indicators showing validation performance.
+**🚀 v1.2.0 Features**: Enhanced multi-fiscal year planning with sequential YoY compounding, universal product support, comprehensive error handling, and MediaFileStorageError prevention.
 
 **📖 Documentation**: See `USER_GUIDE.html` for comprehensive workflow guidance and `Help/SETUP_GUIDE.html` for installation.
 
@@ -227,8 +236,16 @@ git lfs track "*.xls" "*.xlsx" "*.xlsb" "*.zip"
 - **BAT file errors**: Run from File Explorer, not browsers; check Windows execution policy
 - **Package conflicts**: Use provided requirements files and clean Python environment
 
+**🆕 v1.2.0 Enhanced Error Handling:**
+- **MediaFileStorageError**: Automatically prevented through session state cleanup
+- **Multi-fiscal year adjustments**: Now properly compound - each year uses previous year's adjusted values as baseline
+- **Product adjustment failures**: All products now universally apply fiscal year changes to charts AND export data
+- **File reference issues**: Automatic detection and cleanup of invalid session state file references
+
 **💡 Best Practices:**
 - **Default approach**: Sophisticated Quarterly Backtesting provides optimal accuracy with overfitting protection
+- **Multi-year planning**: Use sequential YoY compounding for accurate long-term projections
+- **Product consistency**: All products now handle adjustments identically across visualization and export
 - **Chart interpretation**: 
   - 🔺 **Green triangles** = validation start points (where backtesting predictions begin)
   - 📈 **Purple dotted lines** = actual prediction trends from each validation fold
