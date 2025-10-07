@@ -152,10 +152,10 @@ def create_sidebar_controls():
     
     st.sidebar.markdown("---")
     
-    # Business adjustments
+    # Business adjustments (handled in results view, just get default config)
     business_config = create_business_adjustments_section()
 
-    # Accuracy & Validation (separate, auto-opened)
+    # Accuracy & Validation
     accuracy_validation_config = create_accuracy_validation_section()
     
     # Advanced controls
@@ -213,11 +213,8 @@ def create_renewals_upload_section():
 
 def create_business_adjustments_section():
     """Create business adjustments controls and return configuration."""
-    st.sidebar.subheader("📊 **Forecast Adjustment**")
-    st.sidebar.caption(
-        "Live adjustment now available in the results view. Baseline forecasts run at 100% (no haircut/uplift); tweak interactively after the run."
-    )
-    st.sidebar.markdown("---")
+    # Forecast adjustments are now handled in the results view
+    # Return default configuration without UI elements
     return { 
         'forecast_conservatism': 100
     }
