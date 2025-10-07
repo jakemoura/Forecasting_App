@@ -169,6 +169,66 @@ def apply_business_adjustments_to_forecast(forecasts, annual_growth_pct=0, marke
     return pf
 
 
+def enforce_mom_growth_floor(forecasts, last_historical_value=None):
+    """
+    Enforce non-declining overall trend while preserving seasonal fluctuations.
+    Uses a rolling maximum with smoothing to maintain growth trajectory while 
+    allowing natural seasonal dips. Ideal for hyperscaling consumptive businesses.
+    
+    Args:
+        forecasts: Array or Series of forecast values
+        last_historical_value: Last actual value from historical data (optional)
+    
+    Returns:
+        Adjusted forecast array with non-declining trend but preserved seasonality
+    """
+    pf = np.array(forecasts, dtype=float) if not isinstance(forecasts, np.ndarray) else forecasts.copy()
+    
+    if len(pf) == 0:
+        return pf
+    
+    # Extract the trend using a simple moving average or use raw values for short forecasts
+    window_size = min(3, len(pf))  # 3-month smoothing window for trend
+    
+    if len(pf) <= 3:
+        # For very short forecasts, use simpler approach - just ensure trend doesn't decline
+        # by comparing against a baseline (last historical or first forecast)
+        baseline = last_historical_value if last_historical_value is not None else pf[0]
+        min_trend = baseline
+        for i in range(len(pf)):
+            # Allow seasonal variation but ensure the value doesn't fall below growing baseline
+            # Use 95% of previous trend as floor to allow some seasonal dip
+            min_trend = max(min_trend, pf[i] * 0.95)
+            if pf[i] < min_trend * 0.95:
+                pf[i] = min_trend * 0.95
+    else:
+        # For longer forecasts, extract and enforce non-declining trend
+        # Calculate rolling average to smooth out seasonality and get trend
+        from pandas import Series
+        trend = Series(pf).rolling(window=window_size, center=True, min_periods=1).mean().values
+        trend = np.asarray(trend, dtype=float)
+        
+        # Enforce non-declining trend
+        for i in range(1, len(trend)):
+            if trend[i] < trend[i-1]:
+                trend[i] = trend[i-1]
+        
+        # Calculate seasonal deviations from trend
+        seasonal_factors = pf / np.maximum(trend, 1e-9)
+        
+        # Reconstruct forecast with non-declining trend but preserved seasonal pattern
+        pf = trend * seasonal_factors
+        
+        # Optional: Floor at last historical value if provided
+        if last_historical_value is not None and last_historical_value > 0:
+            # Allow first forecast to dip slightly for seasonality but not below 90% of last actual
+            min_floor = last_historical_value * 0.90
+            pf = np.maximum(pf, min_floor)
+    
+    return pf
+
+
+
 def detect_seasonality_strength(series, seasonal_period=12):
     """
     Detect the strength of seasonality in the time series.

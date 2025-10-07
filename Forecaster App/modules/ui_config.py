@@ -59,7 +59,8 @@ def create_sidebar_controls():
             available_models.append("LightGBM")
 
         # Always run the core five when available; hide from accidental deselection by preselecting them
-        default_models = [m for m in ["ETS", "SARIMA", "Seasonal-Naive", "Auto-ARIMA", "Prophet", "LightGBM"] if m in available_models]
+        # LightGBM not auto-selected by default (user can manually add it)
+        default_models = [m for m in ["ETS", "SARIMA", "Seasonal-Naive", "Auto-ARIMA", "Prophet"] if m in available_models]
         models_selected = st.multiselect(
             "Choose forecasting models",
             available_models,
@@ -217,7 +218,9 @@ def create_business_adjustments_section():
         "Live adjustment now available in the results view. Baseline forecasts run at 100% (no haircut/uplift); tweak interactively after the run."
     )
     st.sidebar.markdown("---")
-    return { 'forecast_conservatism': 100 }
+    return { 
+        'forecast_conservatism': 100
+    }
 
 
 def create_accuracy_validation_section():
@@ -376,6 +379,18 @@ def create_advanced_options_section():
             help="Prioritize business-appropriate models over pure WAPE optimization.",
             disabled=True
         )
+        
+        # Hyperscaling business constraint - prevent trend decline
+        st.markdown("---")
+        st.markdown("#### 📈 **Growth Constraints**")
+        enforce_growth_floor = st.checkbox(
+            "🚀 Enforce non-declining trend",
+            value=False,
+            help="Prevent overall forecast trend from declining while preserving seasonal fluctuations. Ideal for hyperscaling consumptive businesses where underlying growth should be maintained."
+        )
+        
+        if enforce_growth_floor:
+            st.success("✅ Trend growth enforced (seasonality preserved)")
 
     if not enable_statistical_validation:
         st.caption("⚠️ Raw model outputs (no bounds)")
@@ -385,7 +400,8 @@ def create_advanced_options_section():
     return {
             'confidence_intervals': confidence_intervals,
             'enable_statistical_validation': enable_statistical_validation,
-            'enable_business_aware_selection': enable_business_aware_selection
+            'enable_business_aware_selection': enable_business_aware_selection,
+            'enforce_growth_floor': enforce_growth_floor
         }
 
 

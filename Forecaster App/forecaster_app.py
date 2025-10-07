@@ -129,8 +129,10 @@ def process_forecast(uploaded, config):
             enable_enhanced_rolling=bool(config.get('enable_enhanced_rolling', True)),
             min_train_size=int(config.get('enhanced_min_train_size', 12)),
             max_train_size=int(config.get('enhanced_max_train_size', 18)),
-            recency_alpha=float(config.get('enhanced_recency_alpha', 0.6))
-            ,enable_expanding_cv=bool(config.get('enable_expanding_cv', False))
+            recency_alpha=float(config.get('enhanced_recency_alpha', 0.6)),
+            enable_expanding_cv=bool(config.get('enable_expanding_cv', False)),
+            # Growth floor constraint
+            enforce_growth_floor=bool(config.get('enforce_growth_floor', False))
         )
 
         # Unpack pipeline results (now includes backtesting results)

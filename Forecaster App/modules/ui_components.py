@@ -1589,9 +1589,32 @@ def apply_multi_fiscal_year_adjustments(chart_model_data, fiscal_year_adjustment
             except:
                 total_impact = 0
             
+            # Calculate the actual achieved YoY percentage after adjustment
+            achieved_yoy = None
+            
+            # For sequential compounding display, show cumulative growth from original baseline
+            # Get original (unadjusted) data for this fiscal year to use as baseline
+            original_fy_mask = (
+                (chart_model_data['Product'] == product) &
+                (chart_model_data['Type'] == 'forecast') &
+                (pd.to_datetime(chart_model_data['Date']) >= fy_start) &
+                (pd.to_datetime(chart_model_data['Date']) <= fy_end)
+            )
+            
+            original_fy_data = chart_model_data[original_fy_mask]
+            
+            if not original_fy_data.empty:
+                current_fy_total = adjusted_values.sum()  # Use adjusted values
+                original_fy_total = original_fy_data['ACR'].sum()  # Original baseline
+                
+                if original_fy_total > 0:
+                    # Show cumulative growth from original baseline (shows compounding effect)
+                    achieved_yoy = ((current_fy_total / original_fy_total) - 1) * 100
+            
             adjustment_summary[product][f"FY{fy_year}"] = {
                 'target_yoy': target_yoy,
                 'current_yoy': current_yoy,
+                'achieved_yoy': achieved_yoy,  # Add actual resulting YoY
                 'adjustment_ratio': adjustment_ratio,
                 'distribution_method': distribution_method,
                 'months_adjusted': num_months,
@@ -2780,7 +2803,12 @@ def display_forecast_results():
                                 for fy_label, adj_info in fy_adjustments.items():
                                     col1, col2, col3 = st.columns(3)
                                     with col1:
-                                        st.metric(f"{fy_label} Target", f"{adj_info['target_yoy']:.1f}%")
+                                        # Show achieved YoY if available, otherwise show target
+                                        achieved_yoy = adj_info.get('achieved_yoy')
+                                        if achieved_yoy is not None:
+                                            st.metric(f"{fy_label} Growth", f"{achieved_yoy:.1f}%")
+                                        else:
+                                            st.metric(f"{fy_label} Target", f"{adj_info['target_yoy']:.1f}%")
                                     with col2:
                                         current = adj_info.get('current_yoy')
                                         if current is not None:

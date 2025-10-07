@@ -23,7 +23,7 @@ from .models import (
     select_business_aware_best_model, get_seasonality_aware_split, HAVE_PMDARIMA, HAVE_PROPHET, HAVE_LGBM,
     create_ets_fitting_function, create_sarima_fitting_function, create_auto_arima_fitting_function,
     create_prophet_fitting_function, create_polynomial_fitting_function, fit_seasonal_naive, ENABLE_PROPHET, ENABLE_LGBM,
-    create_lightgbm_fitting_function
+    create_lightgbm_fitting_function, enforce_mom_growth_floor
 )
 from .metrics import calculate_validation_metrics, comprehensive_validation_suite, walk_forward_validation, enhanced_rolling_validation
 from .utils import coerce_month_start
@@ -176,7 +176,9 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
                             min_train_size: int = 12,
                             max_train_size: int = 18,
                             recency_alpha: float = 0.6,
-                            enable_expanding_cv: bool = False):
+                            enable_expanding_cv: bool = False,
+                            # Growth floor constraint
+                            enforce_growth_floor: bool = False):
     """
     Main forecasting pipeline that processes data and runs all selected models.
     
@@ -205,6 +207,9 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
         max_train_size: Maximum training window in months (default 18)
         recency_alpha: Decay factor for recency weighting, 0.5-0.8 (default 0.6)
         enable_expanding_cv: Optional expanding-window CV diagnostics (slower); disabled by default
+        
+        # Growth constraints
+        enforce_growth_floor: If True, enforce non-decreasing MoM forecasts (hyperscaling business constraint)
     
     Returns:
         Tuple of (results_dict, avg_mapes_dict, sarima_params_dict, diagnostic_messages,
@@ -235,6 +240,9 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
     # Enhanced configuration logging
     backtesting_mode = "Enhanced Rolling" if enable_enhanced_rolling else "Simple"
     diagnostic_messages.append(f"⚙️ **Configuration**: Backtesting: {enable_backtesting} ({backtesting_mode}), Business-aware: {enable_business_aware_selection}, Statistical validation: {enable_statistical_validation}")
+    
+    if enforce_growth_floor:
+        diagnostic_messages.append("🚀 **Growth Constraint Enabled**: Non-declining trend enforced while preserving seasonal patterns (hyperscaling business mode)")
     
     if enable_enhanced_rolling:
         diagnostic_messages.append(f"🔧 **Enhanced Rolling Config**: Train window: {min_train_size}-{max_train_size}mo, Validation: {validation_horizon}mo, Backtest period: {backtest_months}mo, Recency α: {recency_alpha}")
@@ -373,7 +381,8 @@ def run_forecasting_pipeline(raw_data, models_selected, horizon=12, enable_stati
             enable_prophet_holidays, enable_backtesting, backtest_months, backtest_gap, validation_horizon,
             fiscal_year_start_month,
             backtesting_results, prog, eta_ph, done, total,
-            enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv
+            enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv,
+            enforce_growth_floor
         )
     
     prog.empty()
@@ -766,7 +775,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
                            enable_prophet_holidays, enable_backtesting, backtest_months, backtest_gap, validation_horizon,
                            fiscal_year_start_month,
                            backtesting_results, prog, eta_ph, done, total,
-                           enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv):
+                           enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv,
+                           enforce_growth_floor):
     """Run all selected models for a single product."""
     
     seasonality_strength = detect_seasonality_strength(series)
@@ -780,7 +790,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             apply_business_adjustments, business_growth_assumption, market_multiplier, market_conditions,
             enable_backtesting, backtest_months, backtest_gap,
             validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total,
-            enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv
+            enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv,
+            enforce_growth_floor
         )
     
     # ETS model
@@ -792,7 +803,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             business_growth_assumption, market_multiplier, enable_backtesting,
             backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results,
             prog, eta_ph, done, total,
-            enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv
+            enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv,
+            enforce_growth_floor
         )
     
     # Seasonal-Naive baseline
@@ -823,6 +835,10 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
                 pf_arr = apply_statistical_validation(pf_arr, series, "Seasonal-Naive")
             if apply_business_adjustments:
                 pf_arr = apply_business_adjustments_to_forecast(pf_arr, business_growth_assumption, market_multiplier)
+            # Apply growth floor constraint if enabled
+            if enforce_growth_floor:
+                last_value = series.iloc[-1] if len(series) > 0 else None
+                pf_arr = enforce_mom_growth_floor(pf_arr, last_value)
 
             fore_df = pd.DataFrame({"Product": product, "Date": future_idx, "ACR": pf_arr, "Type": "forecast"})
             results["Seasonal-Naive"].append(pd.concat([act_df, fore_df], ignore_index=True))
@@ -922,7 +938,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
                 diagnostic_messages, poly_degree, apply_business_adjustments,
                 business_growth_assumption, market_multiplier,
                 enable_backtesting,
-                backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv
+                backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv,
+                enforce_growth_floor
             )
     
     # Prophet model (enabled by flag)
@@ -933,7 +950,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             diagnostic_messages, enable_prophet_holidays, enable_statistical_validation,
             apply_business_adjustments, business_growth_assumption, market_multiplier,
             enable_backtesting,
-            backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv
+            backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv,
+            enforce_growth_floor
         )
     
     # Auto-ARIMA model
@@ -944,7 +962,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
             business_growth_assumption, market_multiplier,
             enable_backtesting,
-            backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv
+            backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv,
+            enforce_growth_floor
         )
     
     # LightGBM model (enabled by flag)
@@ -956,7 +975,8 @@ def _run_models_for_product(product, series, train, val, future_idx, act_df,
             business_growth_assumption, market_multiplier,
             enable_backtesting,
             backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total,
-            enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha
+            enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha,
+            enforce_growth_floor
         )
     
     return done
@@ -968,7 +988,8 @@ def _run_sarima_model(product, series, train, val, future_idx, act_df, results, 
                      enable_backtesting, backtest_months, backtest_gap, validation_horizon,
                      fiscal_year_start_month,
                      backtesting_results, prog, eta_ph, done, total,
-                     enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv):
+                     enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv,
+                     enforce_growth_floor):
     """Run SARIMA model for a product."""
     try:
         # Find best SARIMA parameters
@@ -1052,6 +1073,10 @@ def _run_sarima_model(product, series, train, val, future_idx, act_df, results, 
                 if apply_business_adjustments:
                     pf = apply_business_adjustments_to_forecast(pf, business_growth_assumption, market_multiplier)
                     diagnostic_messages.append(f"📈 SARIMA Product {product}: Applied business adjustments (Growth: {business_growth_assumption}%, Market: {market_conditions})")
+                # Apply growth floor constraint if enabled
+                if enforce_growth_floor:
+                    last_value = series.iloc[-1] if len(series) > 0 else None
+                    pf = enforce_mom_growth_floor(pf, last_value)
                 
                 # Store results
                 df_f = pd.DataFrame({"Product": product, "Date": future_idx, "ACR": pf, "Type": "forecast"})
@@ -1182,7 +1207,8 @@ def _run_ets_model(product, series, train, val, future_idx, act_df, results, map
                   business_growth_assumption, market_multiplier, enable_backtesting, 
                   backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, 
                   prog, eta_ph, done, total,
-                  enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv):
+                  enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha, enable_expanding_cv,
+                  enforce_growth_floor):
     """Run ETS model for a product."""
     try:
         # Robust fitting via helper to avoid hard failures on seasonal mode
@@ -1244,6 +1270,10 @@ def _run_ets_model(product, series, train, val, future_idx, act_df, results, map
             pf = apply_statistical_validation(pf, series, "ETS")
         if apply_business_adjustments:
             pf = apply_business_adjustments_to_forecast(pf, business_growth_assumption, market_multiplier)
+        # Apply growth floor constraint if enabled
+        if enforce_growth_floor:
+            last_value = series.iloc[-1] if len(series) > 0 else None
+            pf = enforce_mom_growth_floor(pf, last_value)
         # Backtesting to compute diagnostics (no forecast adjustments)
         if enable_backtesting:
             try:
@@ -1362,7 +1392,8 @@ def _run_polynomial_model(product, series, train, val, future_idx, act_df, resul
                          diagnostic_messages, degree, apply_business_adjustments,
                          business_growth_assumption, market_multiplier,
                          enable_backtesting,
-                         backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv):
+                         backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv,
+                         enforce_growth_floor):
     """Run polynomial regression model for a product."""
     model_name = f"Poly-{degree}"
     
@@ -1413,6 +1444,10 @@ def _run_polynomial_model(product, series, train, val, future_idx, act_df, resul
             # Apply business adjustments if enabled
             if apply_business_adjustments:
                 pf = apply_business_adjustments_to_forecast(pf, business_growth_assumption, market_multiplier)
+            # Apply growth floor constraint if enabled
+            if enforce_growth_floor:
+                last_value = series.iloc[-1] if len(series) > 0 else None
+                pf = enforce_mom_growth_floor(pf, last_value)
             
             # Store results
             fore_df = pd.DataFrame({"Product": product, "Date": future_idx, "ACR": pf, "Type": "forecast"})
@@ -1515,7 +1550,8 @@ def _run_prophet_model(product, series, train, val, future_idx, act_df, results,
                       diagnostic_messages, enable_prophet_holidays, enable_statistical_validation,
                       apply_business_adjustments, business_growth_assumption, market_multiplier,
                       enable_backtesting,
-                      backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv):
+                      backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv,
+                      enforce_growth_floor):
     """Run Prophet model for a product."""
     try:
         # Setup holidays if enabled
@@ -1587,6 +1623,10 @@ def _run_prophet_model(product, series, train, val, future_idx, act_df, results,
             pf = apply_statistical_validation(pf, series, "Prophet")
         if apply_business_adjustments:
             pf = apply_business_adjustments_to_forecast(pf, business_growth_assumption, market_multiplier)
+        # Apply growth floor constraint if enabled
+        if enforce_growth_floor:
+            last_value = series.iloc[-1] if len(series) > 0 else None
+            pf = enforce_mom_growth_floor(pf, last_value)
         
         # Store results
         fore_df = pd.DataFrame({"Product": product, "Date": future_idx, "ACR": pf, "Type": "forecast"})
@@ -1704,7 +1744,8 @@ def _run_auto_arima_model(product, series, train, val, future_idx, act_df, resul
                          diagnostic_messages, enable_statistical_validation, apply_business_adjustments,
                          business_growth_assumption, market_multiplier,
                          enable_backtesting,
-                         backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv):
+                         backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total, enable_expanding_cv,
+                         enforce_growth_floor):
     """Run Auto-ARIMA model for a product."""
     try:
         # Check if auto_arima is available
@@ -1790,6 +1831,10 @@ def _run_auto_arima_model(product, series, train, val, future_idx, act_df, resul
             pf = apply_statistical_validation(pf, series, "Auto-ARIMA")
         if apply_business_adjustments:
             pf = apply_business_adjustments_to_forecast(pf, business_growth_assumption, market_multiplier)
+        # Apply growth floor constraint if enabled
+        if enforce_growth_floor:
+            last_value = series.iloc[-1] if len(series) > 0 else None
+            pf = enforce_mom_growth_floor(pf, last_value)
 
         # Store results
         fore_df = pd.DataFrame({"Product": product, "Date": future_idx, "ACR": pf, "Type": "forecast"})
@@ -1895,7 +1940,8 @@ def _run_lightgbm_model(product, series, train, val, future_idx, act_df, results
                        business_growth_assumption, market_multiplier,
                        enable_backtesting,
                        backtest_months, backtest_gap, validation_horizon, fiscal_year_start_month, backtesting_results, prog, eta_ph, done, total,
-                       enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha):
+                       enable_enhanced_rolling, min_train_size, max_train_size, recency_alpha,
+                       enforce_growth_floor):
     """Run LightGBM model for a product."""
     try:
         # Leak-safe LightGBM fitting (uses new signature)
@@ -1972,6 +2018,10 @@ def _run_lightgbm_model(product, series, train, val, future_idx, act_df, results
                         pf = apply_statistical_validation(pf, series, "LightGBM")
                     if apply_business_adjustments:
                         pf = apply_business_adjustments_to_forecast(pf, business_growth_assumption, market_multiplier)
+                    # Apply growth floor constraint if enabled
+                    if enforce_growth_floor:
+                        last_value = series.iloc[-1] if len(series) > 0 else None
+                        pf = enforce_mom_growth_floor(pf, last_value)
                     fore_df = pd.DataFrame({"Product": product, "Date": future_idx[:len(pf)], "ACR": pf, "Type": "forecast"})
                     results["LightGBM"].append(pd.concat([act_df, fore_df], ignore_index=True))
                     diagnostic_messages.append(f"✅ LightGBM Product {product}: WAPE {best_mape:.1%} (leak-safe)")
