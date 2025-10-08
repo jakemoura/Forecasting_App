@@ -1293,16 +1293,27 @@ def create_multi_fiscal_year_adjustment_controls(chart_model_data, fiscal_year_s
                         stored_target = stored_adjustments[product][fy_year].get('target_yoy')
                     
                     # Target YoY growth input
+                    min_yoy = -50.0
+                    max_yoy = 200.0
                     default_value = stored_target if stored_target is not None else (float(fy_current_yoy) if fy_current_yoy is not None else 10.0)
-                    target_yoy = st.number_input(
-                        f"Target YoY Growth (%)",
-                        min_value=-50.0,
-                        max_value=200.0,
-                        value=default_value,
-                        step=1.0,
-                        key=f"fy_target_{product}_{fy_year}",
-                        help=f"Target YoY growth for FY{fy_year}"
-                    )
+                    # Clamp default_value to allowed range
+                    if default_value < min_yoy:
+                        default_value = min_yoy
+                    elif default_value > max_yoy:
+                        default_value = max_yoy
+                    target_yoy = default_value
+                    try:
+                        target_yoy = st.number_input(
+                            f"Target YoY Growth (%)",
+                            min_value=min_yoy,
+                            max_value=max_yoy,
+                            value=default_value,
+                            step=1.0,
+                            key=f"fy_target_{product}_{fy_year}",
+                            help=f"Target YoY growth for FY{fy_year}"
+                        )
+                    except Exception:
+                        pass
                     
                     # Check if this adjustment was previously enabled (for persistence)
                     was_previously_enabled = (
@@ -1318,6 +1329,9 @@ def create_multi_fiscal_year_adjustment_controls(chart_model_data, fiscal_year_s
                         key=f"enable_fy_{product}_{fy_year}",
                         help=f"Enable YoY growth adjustment for FY{fy_year}"
                     )
+                    
+                    # Initialize distribution_method with a default value
+                    distribution_method = 'Smooth'
                     
                     if enable_fy_adjustment:
                         # Get previously stored distribution method if available
@@ -1424,9 +1438,37 @@ def analyze_fiscal_year_coverage(chart_model_data, fiscal_year_start_month=7):
             except Exception:
                 pass
         
+        # Calculate YoY growth for each fiscal year
+        fy_specific_yoy = {}
+        if not forecast_data.empty:
+            try:
+                # Add fiscal year column to all data
+                all_data = pd.concat([actual_data, forecast_data])
+                all_data['FiscalYear'] = all_data['Date'].apply(
+                    lambda d: calculate_fiscal_year(d, fiscal_year_start_month)
+                )
+                
+                # Group by fiscal year and sum ACR
+                fy_totals = all_data.groupby('FiscalYear')['ACR'].sum().to_dict()
+                
+                # Calculate YoY growth for each forecasted fiscal year
+                for fy in sorted(fiscal_years_covered):
+                    prior_fy = fy - 1
+                    
+                    if prior_fy in fy_totals and fy in fy_totals:
+                        prior_total = fy_totals[prior_fy]
+                        current_total = fy_totals[fy]
+                        
+                        if prior_total > 0:
+                            yoy_growth = ((current_total / prior_total) - 1.0) * 100.0
+                            fy_specific_yoy[fy] = yoy_growth
+            except Exception:
+                pass
+        
         analysis[product] = {
             'fiscal_years': list(fiscal_years_covered),
             'current_yoy_growth': current_yoy_growth,
+            'fy_specific_yoy': fy_specific_yoy,
             'actual_data_available': not actual_data.empty,
             'forecast_data_available': not forecast_data.empty
         }

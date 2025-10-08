@@ -117,7 +117,7 @@ echo.
 echo [5/7] Installing compatible base packages...
 echo.
 echo Installing compatible numpy version...
-python -m pip install "numpy>=1.21.0,<1.25.0" --no-warn-script-location --timeout 300 --force-reinstall
+python -m pip install "numpy>=1.21.0" --no-warn-script-location --timeout 300 --force-reinstall
 if errorlevel 1 (
     echo [X] ERROR: Failed to install compatible numpy
     pause
@@ -126,7 +126,7 @@ if errorlevel 1 (
 
 echo.
 echo Installing compatible scipy version...
-python -m pip install "scipy>=1.9.0,<1.11.0" --no-warn-script-location --timeout 300 --force-reinstall
+python -m pip install "scipy>=1.9.0" --no-warn-script-location --timeout 300 --force-reinstall
 if errorlevel 1 (
     echo [X] ERROR: Failed to install compatible scipy
     pause
@@ -157,15 +157,19 @@ if not errorlevel 1 (
     set SETUPTOOLS_USE_DISTUTILS=stdlib
     set DISTUTILS_USE_SDK=1
     
-    echo [+] Attempting pmdarima installation with build isolation disabled...
-    python -m pip install "pmdarima>=2.0.4" --no-build-isolation --no-cache-dir --no-warn-script-location --timeout 900 --verbose
+    echo [+] Attempting pmdarima installation with pre-built wheels (recommended for Python 3.11+)...
+    python -m pip install pmdarima --no-cache-dir --no-warn-script-location --timeout 900
     if errorlevel 1 (
-        echo [!] Build isolation method failed, trying with pre-built wheels...
-        python -m pip install "pmdarima>=2.0.4" --no-cache-dir --no-warn-script-location --timeout 900 --verbose
+        echo [!] Latest version failed, trying specific version 2.0.4...
+        python -m pip install "pmdarima==2.0.4" --no-cache-dir --no-warn-script-location --timeout 900
         if errorlevel 1 (
-            echo [!] Pre-built wheels failed, trying older pmdarima version...
-            python -m pip install "pmdarima>=1.8.0,<2.0.0" --no-cache-dir --no-warn-script-location --timeout 900 --verbose
-            if errorlevel 1 goto :install_failed
+            echo [!] Pre-built wheels failed, trying with build isolation disabled...
+            python -m pip install pmdarima --no-build-isolation --no-cache-dir --no-warn-script-location --timeout 900 --verbose
+            if errorlevel 1 (
+                echo [!] Build isolation method failed, trying older pmdarima version...
+                python -m pip install "pmdarima>=1.8.0,<2.0.0" --no-cache-dir --no-warn-script-location --timeout 900
+                if errorlevel 1 goto :install_failed
+            )
         )
     )
 ) else (
@@ -182,20 +186,25 @@ goto :test_installation
     echo [X] ERROR: pmdarima installation failed!
     echo.
     echo Common causes and solutions:
-    echo   1. Python 3.11+ distutils compatibility issue (current issue)
-    echo      - Try using Python 3.10 instead of 3.11+
-    echo      - Or install from Microsoft Store (Python 3.10)
+    echo   1. Python 3.13+ compatibility issue (newest Python versions)
+    echo      - pmdarima may not have pre-built wheels for Python 3.13 yet
+    echo      - RECOMMENDED: Use Python 3.11 or 3.12 instead
+    echo      - Download from python.org or Microsoft Store
     echo.
-    echo   2. Missing C++ compiler
+    echo   2. Python 3.11+ distutils compatibility issue
+    echo      - Pre-built wheels should work (no compilation needed)
+    echo      - If compilation is attempted, may fail due to missing distutils
+    echo.
+    echo   3. Missing C++ compiler (only needed if building from source)
     echo      - Install "Microsoft C++ Build Tools" from:
     echo        https://visualstudio.microsoft.com/visual-cpp-build-tools/
     echo      - Or install Visual Studio Community with C++ workload
     echo.
-    echo   3. Network timeout during compilation
+    echo   4. Network timeout during installation
     echo      - Try running this script again
     echo      - Check your internet connection
     echo.
-    echo   4. Insufficient system resources
+    echo   5. Insufficient system resources
     echo      - Close other applications
     echo      - Ensure sufficient disk space (2GB+ free)
     echo.
