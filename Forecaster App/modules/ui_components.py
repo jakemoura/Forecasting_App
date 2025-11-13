@@ -2794,97 +2794,26 @@ def display_forecast_results():
         with pd.ExcelWriter(buf2, engine="openpyxl") as writer:
             download_data_with_fiscal.to_excel(writer, index=False, sheet_name="Actuals_Forecast")
         buf2.seek(0)
-        today = datetime.today().strftime("%Y%m%d")
-
-        # Add adjustment indicators to filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = Path(uploaded_filename).stem[:40]
+        sanitized_choice = choice.replace(" ", "_")[:30]
         filename_suffix = ""
+        # Preserve minimal context about adjustments via flag prefixes to keep name short
         adjustment_type = st.session_state.get('adjustment_type')
-        
-        if st.session_state.get('adjusted_forecast_results') is not None:
-            if adjustment_type == "manual":
-                product_adjustments = st.session_state.get('product_adjustments_applied', {})
-                adjustment_percentages = []
-                for product, adj_info in product_adjustments.items():
-                    if isinstance(adj_info, dict):
-                        adj_pct = adj_info.get('percentage', 0)
-                        if adj_pct != 0 and adj_pct is not None:
-                            # Handle both int and float values with error handling
-                            try:
-                                if isinstance(adj_pct, (int, float)):
-                                    adj_str = f"{int(adj_pct):+d}"
-                                else:
-                                    adj_float = float(adj_pct)
-                                    adj_str = f"{int(adj_float):+d}"
-                                adjustment_percentages.append(f"{adj_str}%")
-                            except (ValueError, TypeError):
-                                continue
-                    else:
-                        if adj_info != 0 and adj_info is not None:
-                            # Handle both int and float values with error handling
-                            try:
-                                if isinstance(adj_info, (int, float)):
-                                    adj_str = f"{int(adj_info):+d}"
-                                else:
-                                    adj_float = float(adj_info)
-                                    adj_str = f"{int(adj_float):+d}"
-                                adjustment_percentages.append(f"{adj_str}%")
-                            except (ValueError, TypeError):
-                                continue
-
-                if adjustment_percentages:
-                    filename_suffix += f"_adj{'-'.join(adjustment_percentages)}"
-                    
-            elif adjustment_type == "fiscal_year_growth":
-                fy_adjustments = st.session_state.get('fiscal_year_adjustments_applied', {})
-                fy_percentages = []
-                for product, fy_info in fy_adjustments.items():
-                    if isinstance(fy_info, dict):
-                        for fy, fy_data in fy_info.items():
-                            # fy_data should be a dict with 'target_yoy', 'enabled', etc.
-                            if isinstance(fy_data, dict) and fy_data.get('enabled', False):
-                                target_yoy = fy_data.get('target_yoy', 0)
-                                if target_yoy != 0 and target_yoy is not None:
-                                    try:
-                                        if isinstance(target_yoy, (int, float)):
-                                            growth_str = f"{int(target_yoy):+d}"
-                                        else:
-                                            target_float = float(target_yoy)
-                                            growth_str = f"{int(target_float):+d}"
-                                        fy_percentages.append(f"FY{fy}_{growth_str}%")
-                                    except (ValueError, TypeError):
-                                        # Skip invalid values
-                                        continue
-                
-                if fy_percentages:
-                    filename_suffix += f"_fyGrowth_{'-'.join(fy_percentages)}"
-
-        if st.session_state.get('business_adjustments_applied', False):
-            growth = st.session_state.get('business_growth_used', 0)
-            if growth != 0 and growth is not None:
-                # Handle both int and float values with error handling
-                try:
-                    if isinstance(growth, (int, float)):
-                        growth_str = f"{int(growth):+d}"
-                    else:
-                        growth_float = float(growth)
-                        growth_str = f"{int(growth_float):+d}"
-                    filename_suffix += f"_biz{growth_str}%"
-                except (ValueError, TypeError):
-                    # Skip invalid growth values
-                    pass
-
+        if adjustment_type == "manual":
+            filename_suffix = "_adj"
+        elif adjustment_type == "fiscal_year_growth":
+            filename_suffix = "_fy"
         if st.session_state.get('yearly_renewals_applied', False):
-            filename_suffix += "_YearlyRenewals"
-            
-        # Add conservatism factor to filename if not 100%
+            filename_suffix += "_renew"
         conservatism_factor = st.session_state.get('forecast_conservatism_used', 100)
         if conservatism_factor != 100:
-            filename_suffix += f"_conservatism{conservatism_factor}pct"
+            filename_suffix += f"_c{int(conservatism_factor)}"
 
         with col2:
             st.download_button(
                 "📊 **Download Excel**", data=buf2,
-                file_name=f"{Path(uploaded_filename).stem}_{choice}{filename_suffix}_{today}.xlsx",
+                file_name=f"{base_name}_{sanitized_choice}{filename_suffix}_{timestamp}.xlsx",
                 type="primary",
                 use_container_width=True
             )
