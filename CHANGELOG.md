@@ -5,6 +5,25 @@ All notable changes to the Forecasting Applications will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2025-11-13
+
+### 🎯 Added
+- **Per-product fiscal-year totals in results**: Forecast dashboards now surface combined actual, forecast, and non-compliant revenue totals for every product.
+- **Live fiscal-year totals in adjustment panel**: Each product expander reports updated totals while YoY targets are adjusted, showing the dollar impact instantly.
+
+### 🔧 Changed
+- **Optional boundary smoothing for July**: New toggle blends fiscal-year handoffs to prevent sharp spikes when overrides diverge from model output.
+- **Streamlined review workflow**: Model selector sits above the chart and export filenames use the compact `Base_Model_YYYYMMDD_HHMMSS.xlsx` pattern to avoid Windows path limits.
+
+### 🐛 Fixed
+- **Totals stay synchronized across modes**: UI widgets and downloads now remain aligned when switching between manual sliders and fiscal-year targets.
+- **Sequential adjustment stability**: Eliminated the intermittent dimension mismatch triggered by multi-year overrides.
+
+### 📝 Documentation
+- Added `RELEASE_NOTES_v1.4.0.md` to capture fiscal-year totals, smoothing control, and export naming updates.
+
+---
+
 ## [1.3.0] - 2025-10-08
 
 ### 🎯 Added
@@ -88,6 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Release Date | Key Features |
 |---------|--------------|--------------|
+| 1.4.0 | 2025-11-13 | FY totals everywhere, smoothing toggle |
 | 1.3.0 | 2025-10-08 | Fiscal Year Intelligence, Bug Fixes, Enhanced Setup |
 | 1.2.0 | 2025-09-XX | Sequential YoY Compounding, Universal Product Support |
 | 1.1.0 | 2025-08-XX | Live Conservatism, Enhanced Backtesting Visualization |
@@ -96,6 +116,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 ## Upgrade Notes
+
+### Upgrading to 1.4.0
+- **Recommended**: Pull the latest code and restart the Streamlit app to load the new fiscal-year totals and smoothing controls.
+- **Optional**: Rerun `SETUP.bat` if the Python environment has drifted.
+- **Breaking Changes**: None - fully backward compatible.
 
 ### Upgrading to 1.3.0
 - **Recommended**: Use Python 3.11 or 3.12 for best compatibility
@@ -123,6 +148,7 @@ For issues or questions:
 
 ---
 
+[1.4.0]: https://github.com/jakemoura/Forecasting_App/releases/tag/v1.4.0
 [1.3.0]: https://github.com/jakemoura/Forecasting_App/releases/tag/v1.3.0
 [1.2.0]: https://github.com/jakemoura/Forecasting_App/releases/tag/v1.2.0
 [1.1.0]: https://github.com/jakemoura/Forecasting_App/releases/tag/v1.1.0
