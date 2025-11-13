@@ -1181,9 +1181,7 @@ def create_multi_fiscal_year_adjustment_controls(chart_model_data, fiscal_year_s
     """
     st.markdown("### 🎯 **Multi-Fiscal Year Growth Targets**")
     
-    stored_adjustments_state = st.session_state.get('fiscal_year_adjustments_applied', {})
-
-    # Add clear button and smoothing toggle
+    # Add clear button
     col1, col2 = st.columns([3, 1])
     with col1:
         st.markdown("Set YoY growth targets for each forecasted fiscal year.")
@@ -1200,81 +1198,6 @@ def create_multi_fiscal_year_adjustment_controls(chart_model_data, fiscal_year_s
                 if key in st.session_state:
                     del st.session_state[key]
             st.rerun()
-
-    if 'fy_boundary_smoothing_enabled' in st.session_state:
-        default_smoothing = st.session_state['fy_boundary_smoothing_enabled']
-    else:
-        default_smoothing = any(
-            any(adj_data.get('smooth_boundary') for adj_data in product_map.values())
-            for product_map in stored_adjustments_state.values()
-        )
-    boundary_smoothing_enabled = st.checkbox(
-        "Smooth fiscal year boundary transitions",
-        value=default_smoothing,
-        help="Blend the first months of a fiscal year with the previous period when YoY targets change to reduce MoM spikes.",
-        key="fy_boundary_smoothing_toggle"
-    )
-    st.session_state.fy_boundary_smoothing_enabled = boundary_smoothing_enabled
-
-    def _coerce_dataframe(data):
-        if isinstance(data, list):
-            frames = [df for df in data if isinstance(df, pd.DataFrame)]
-            if frames:
-                return pd.concat(frames, ignore_index=True)
-            return pd.DataFrame()
-        if isinstance(data, pd.DataFrame):
-            return data.copy()
-        return pd.DataFrame()
-
-    def _current_product_fy_totals(product_name):
-        model_key = st.session_state.get('model_choice_charts')
-        adjusted_map = st.session_state.get('adjusted_forecast_results')
-        if adjusted_map and model_key and model_key in adjusted_map:
-            source_df = _coerce_dataframe(adjusted_map[model_key])
-        else:
-            source_df = _coerce_dataframe(chart_model_data)
-
-        if source_df.empty or 'Product' not in source_df.columns or 'Date' not in source_df.columns:
-            return pd.DataFrame()
-
-        product_df = source_df[source_df['Product'] == product_name].copy()
-        if product_df.empty:
-            return pd.DataFrame()
-
-        product_df['Date'] = pd.to_datetime(product_df['Date'], errors='coerce')
-        product_df = product_df.dropna(subset=['Date'])
-        if product_df.empty:
-            return pd.DataFrame()
-
-        if 'Type' not in product_df.columns:
-            product_df['Type'] = 'forecast'
-
-        product_df['FiscalYear'] = product_df['Date'].apply(lambda d: calculate_fiscal_year(d, fiscal_year_start_month))
-        actual_labels = {"actual", "history", "historical"}
-        noncompliant_labels = {"non-compliant", "non-compliant-forecast"}
-
-        summary_rows = []
-        for fiscal_year, grp in product_df.groupby('FiscalYear'):
-            actual_sum = grp[grp['Type'].isin(actual_labels)]['ACR'].sum()
-            forecast_sum = grp[grp['Type'] == 'forecast']['ACR'].sum()
-            noncompliant_sum = grp[grp['Type'].isin(noncompliant_labels)]['ACR'].sum()
-            total_sum = actual_sum + forecast_sum + noncompliant_sum
-            completion_pct = (actual_sum / total_sum * 100.0) if total_sum > 0 else np.nan
-            summary_rows.append({
-                'FiscalYear': fiscal_year,
-                'Fiscal Year': f"FY{int(fiscal_year)}",
-                'ActualsYTD': actual_sum / 1e6,
-                'ForecastRemaining': forecast_sum / 1e6,
-                'NonCompliant': noncompliant_sum / 1e6,
-                'FYTotal': total_sum / 1e6,
-                'CompletionPct': completion_pct
-            })
-
-        if not summary_rows:
-            return pd.DataFrame()
-
-        summary_df = pd.DataFrame(summary_rows).sort_values('FiscalYear')
-        return summary_df[['Fiscal Year', 'ActualsYTD', 'ForecastRemaining', 'NonCompliant', 'FYTotal', 'CompletionPct']]
     
     # Get unique products
     unique_products = chart_model_data["Product"].unique()
@@ -1309,8 +1232,9 @@ def create_multi_fiscal_year_adjustment_controls(chart_model_data, fiscal_year_s
     # Debug information (can be removed later)
     if st.checkbox("🔍 Show Debug Info", value=False, key="debug_fy_adjustments"):
         st.write("**Current Session State:**")
-        st.write(f"Stored adjustments: {len(stored_adjustments_state)} products")
-        for prod, adj in stored_adjustments_state.items():
+        stored_adjustments = st.session_state.get('fiscal_year_adjustments_applied', {})
+        st.write(f"Stored adjustments: {len(stored_adjustments)} products")
+        for prod, adj in stored_adjustments.items():
             enabled_fys = [fy for fy, info in adj.items() if info.get('enabled', False)]
             st.write(f"- {prod}: {enabled_fys} fiscal years enabled")
         
@@ -1358,12 +1282,15 @@ def create_multi_fiscal_year_adjustment_controls(chart_model_data, fiscal_year_s
                     if fy_current_yoy is not None:
                         st.caption(f"Current: {fy_current_yoy:.1f}%")
                     
+                    # Get stored adjustments for persistence (defined once)
+                    stored_adjustments = st.session_state.get('fiscal_year_adjustments_applied', {})
+                    
                     # Get previously stored target value if available
                     stored_target = None
-                    if (product in stored_adjustments_state and
-                        fy_year in stored_adjustments_state[product] and
-                        stored_adjustments_state[product][fy_year].get('enabled', False)):
-                        stored_target = stored_adjustments_state[product][fy_year].get('target_yoy')
+                    if (product in stored_adjustments and
+                        fy_year in stored_adjustments[product] and
+                        stored_adjustments[product][fy_year].get('enabled', False)):
+                        stored_target = stored_adjustments[product][fy_year].get('target_yoy')
                     
                     # Target YoY growth input
                     min_yoy = -50.0
@@ -1390,9 +1317,9 @@ def create_multi_fiscal_year_adjustment_controls(chart_model_data, fiscal_year_s
                     
                     # Check if this adjustment was previously enabled (for persistence)
                     was_previously_enabled = (
-                        product in stored_adjustments_state and
-                        fy_year in stored_adjustments_state[product] and
-                        stored_adjustments_state[product][fy_year].get('enabled', False)
+                        product in stored_adjustments and
+                        fy_year in stored_adjustments[product] and
+                        stored_adjustments[product][fy_year].get('enabled', False)
                     )
                     
                     # Enable toggle with persistence
@@ -1409,10 +1336,10 @@ def create_multi_fiscal_year_adjustment_controls(chart_model_data, fiscal_year_s
                     if enable_fy_adjustment:
                         # Get previously stored distribution method if available
                         stored_distribution = None
-                        if (product in stored_adjustments_state and
-                            fy_year in stored_adjustments_state[product] and
-                            stored_adjustments_state[product][fy_year].get('enabled', False)):
-                            stored_distribution = stored_adjustments_state[product][fy_year].get('distribution_method', 'Smooth')
+                        if (product in stored_adjustments and
+                            fy_year in stored_adjustments[product] and
+                            stored_adjustments[product][fy_year].get('enabled', False)):
+                            stored_distribution = stored_adjustments[product][fy_year].get('distribution_method', 'Smooth')
                         
                         # Growth distribution method
                         distribution_options = ["Smooth", "Linear Ramp", "Exponential", "Front-loaded", "Back-loaded"]
@@ -1432,8 +1359,7 @@ def create_multi_fiscal_year_adjustment_controls(chart_model_data, fiscal_year_s
                             'target_yoy': target_yoy,
                             'current_yoy': fy_current_yoy,
                             'distribution_method': distribution_method,
-                            'enabled': True,
-                            'smooth_boundary': boundary_smoothing_enabled
+                            'enabled': True
                         }
                         
                         # Show adjustment summary with better error handling
@@ -1452,30 +1378,9 @@ def create_multi_fiscal_year_adjustment_controls(chart_model_data, fiscal_year_s
                             # Fallback to simple target display if there's any calculation error
                             st.info(f"🎯 Target: {target_yoy:.1f}% YoY")
                     else:
-                        product_fy_adjustments[fy_year] = {
-                            'enabled': False,
-                            'smooth_boundary': boundary_smoothing_enabled
-                        }
+                        product_fy_adjustments[fy_year] = {'enabled': False}
             
             fiscal_year_adjustments[product] = product_fy_adjustments
-
-            # Live fiscal year totals for this product
-            product_totals_df = _current_product_fy_totals(product)
-            if not product_totals_df.empty:
-                st.markdown("**Fiscal Year Totals (live)**")
-                st.dataframe(
-                    product_totals_df,
-                    hide_index=True,
-                    use_container_width=True,
-                    column_config={
-                        'ActualsYTD': st.column_config.NumberColumn('Actuals YTD ($M)', format='%.1f'),
-                        'ForecastRemaining': st.column_config.NumberColumn('Forecast Remaining ($M)', format='%.1f'),
-                        'NonCompliant': st.column_config.NumberColumn('Non-Compliant ($M)', format='%.1f'),
-                        'FYTotal': st.column_config.NumberColumn('FY Total ($M)', format='%.1f'),
-                        'CompletionPct': st.column_config.NumberColumn('Completion (%)', format='%.0f%%')
-                    }
-                )
-                st.caption("Totals update in real time as you change the fiscal year percentages.")
     
     return fiscal_year_adjustments
 
@@ -1708,62 +1613,12 @@ def apply_multi_fiscal_year_adjustments(chart_model_data, fiscal_year_adjustment
                     last_factor = factors[-1] if len(factors) > 0 else adjustment_ratio
                     factors = np.concatenate([factors, np.full(len(original_values) - len(factors), last_factor)])
             
-            # Apply the adjustments with fiscal-boundary smoothing to avoid sharp MoM spikes
+            # Apply the adjustments
             try:
-                base_adjusted_values = original_values * factors
-
-                # Look up the most recent value preceding this fiscal year to anchor smoothing
-                prev_period_mask = (
-                    (adjusted_data['Product'] == product) &
-                    (pd.to_datetime(adjusted_data['Date']) < fy_start)
-                )
-                prev_period_data = adjusted_data.loc[prev_period_mask].copy()
-                prev_value = None
-                if not prev_period_data.empty:
-                    prev_value = float(prev_period_data.sort_values('Date')['ACR'].iloc[-1])
-
-                # Smooth first few months to transition gradually from previous period
-                adjusted_values = base_adjusted_values
-                smoothing_window = min(3, len(base_adjusted_values))
-                should_smooth_boundary = (
-                    adjustment_info.get('smooth_boundary', False)
-                    and prev_value is not None
-                    and smoothing_window > 1
-                    and abs(adjustment_ratio - 1.0) > 1e-6
-                )
-
-                if should_smooth_boundary:
-                    adjusted_values = base_adjusted_values.copy()
-                    prefix_indices = list(range(smoothing_window))
-                    for idx in prefix_indices:
-                        blend = idx / (smoothing_window - 1)
-                        adjusted_values[idx] = (1 - blend) * prev_value + blend * base_adjusted_values[idx]
-
-                    base_total = float(base_adjusted_values.sum())
-                    prefix_total = float(adjusted_values[prefix_indices].sum())
-
-                    if prefix_total > base_total and prefix_total > 0:
-                        scale_down = base_total / prefix_total
-                        adjusted_values[prefix_indices] = adjusted_values[prefix_indices] * scale_down
-                        prefix_total = float(adjusted_values[prefix_indices].sum())
-
-                    if len(base_adjusted_values) > smoothing_window:
-                        remainder_idx = np.arange(smoothing_window, len(base_adjusted_values))
-                        remainder_base_sum = float(base_adjusted_values[remainder_idx].sum())
-                        target_remainder_sum = base_total - prefix_total
-                        if target_remainder_sum < 0:
-                            target_remainder_sum = 0.0
-                        if remainder_base_sum > 0:
-                            scale_factor = target_remainder_sum / remainder_base_sum
-                            adjusted_values[remainder_idx] = base_adjusted_values[remainder_idx] * scale_factor
-                    else:
-                        if prefix_total > 0:
-                            scale_factor = base_total / prefix_total
-                            adjusted_values = adjusted_values * scale_factor
-
+                adjusted_values = original_values * factors
                 adjusted_data.loc[fy_forecast_indices, 'ACR'] = adjusted_values
-            except Exception:
-                # Skip this adjustment if there's still a dimension mismatch or smoothing error
+            except Exception as e:
+                # Skip this adjustment if there's still a dimension mismatch
                 continue
             
             # Track adjustment summary
@@ -2206,42 +2061,47 @@ def display_forecast_results():
     # === FORECAST VISUALIZATIONS (HIGH PRIORITY) ===
     st.markdown("## 📈 **Your Forecast Results**")
     
-    # Model selection for viewing charts (moved above visualization section)
-    raw_keys = list(results.keys())
-    allowed_composites = {
-        "Best per Product (Standard)",
-        "Best per Product (Backtesting)",
-        "Best per Product (Mix)"
-    }
-    cleaned = []
-    seen = set()
-    for k in raw_keys:
-        if k == "Best per Product":
-            continue
-        if k.startswith("Best per Product (") and k not in allowed_composites:
-            continue
-        label = k.strip()
-        if label in seen:
-            continue
-        seen.add(label)
-        cleaned.append(label)
-    ordered = [m for m in cleaned if m not in allowed_composites]
-    for comp in ["Best per Product (Standard)", "Best per Product (Backtesting)", "Best per Product (Mix)"]:
-        if comp in cleaned:
-            ordered.append(comp)
-    if "Best per Product (Backtesting)" in ordered:
-        default_key = "Best per Product (Backtesting)"
-    elif "Best per Product (Mix)" in ordered:
-        default_key = "Best per Product (Mix)"
-    elif "Best per Product (Standard)" in ordered:
-        default_key = "Best per Product (Standard)"
-    elif best_model in ordered:
-        default_key = best_model
-    else:
-        default_key = ordered[0]
-    default_idx = ordered.index(default_key) if default_key in ordered else 0
-    chart_col1, chart_col2 = st.columns([3, 1])
-    with chart_col1:
+    # Model selection for viewing charts
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        raw_keys = list(results.keys())
+        # Keep base individual models (no parentheses) and the three sanctioned composite variants
+        allowed_composites = {
+            "Best per Product (Standard)",
+            "Best per Product (Backtesting)",
+            "Best per Product (Mix)"
+        }
+        cleaned = []
+        seen = set()
+        for k in raw_keys:
+            if k == "Best per Product":
+                # Hide legacy generic aggregate (redundant now)
+                continue
+            if k.startswith("Best per Product (") and k not in allowed_composites:
+                # Skip any unexpected composite flavor
+                continue
+            label = k.strip()
+            if label in seen:
+                continue
+            seen.add(label)
+            cleaned.append(label)
+        # Ensure composites appear grouped at end in preferred order
+        ordered = [m for m in cleaned if m not in allowed_composites]
+        for comp in ["Best per Product (Standard)", "Best per Product (Backtesting)", "Best per Product (Mix)"]:
+            if comp in cleaned:
+                ordered.append(comp)
+        # Prioritize "Best per Product (Backtesting)" as the default, then fallback to other options
+        if "Best per Product (Backtesting)" in ordered:
+            default_key = "Best per Product (Backtesting)"
+        elif "Best per Product (Mix)" in ordered:
+            default_key = "Best per Product (Mix)"
+        elif "Best per Product (Standard)" in ordered:
+            default_key = "Best per Product (Standard)"
+        elif best_model in ordered:
+            default_key = best_model
+        else:
+            default_key = ordered[0]
+        default_idx = ordered.index(default_key) if default_key in ordered else 0
         chart_model = st.selectbox(
             "📊 Select model to view",
             options=ordered,
@@ -2249,7 +2109,7 @@ def display_forecast_results():
             key="model_choice_charts",
             help="🏆 Best per Product (Backtesting): Rigorous walk-forward validation (recommended). 📊 Best per Product (Standard): Multi-metric ranking fallback for insufficient history. 🎯 Individual models: Single model consistency."
         )
-    with chart_col2:
+    with col2:
         chart_mape = avg_mapes.get(chart_model, np.nan) * 100
         if not np.isnan(chart_mape) and np.isfinite(chart_mape):
             if chart_model == "Best per Product (Backtesting)":
@@ -2263,11 +2123,13 @@ def display_forecast_results():
             else:
                 st.info(f"📈 WAPE: {chart_mape:.1f}%")
         else:
+            # Fallback for models without WAPE data or infinite WAPE
             if chart_model and chart_model.startswith("Best per Product"):
                 st.success("🏆 Best Model (Composite)")
             else:
                 st.info("📈 Model Selected")
-
+    
+    # Add guidance when Standard is selected
     if chart_model == "Best per Product (Standard)":
         st.info("ℹ️ **Standard Selection**: Uses multi-metric ranking. Recommended only when insufficient data for backtesting (<24 months history).")
     
@@ -2462,11 +2324,9 @@ def display_forecast_results():
     
     if not fy_data.empty:
         # Calculate totals by type for current fiscal year
-        actual_labels = {"actual", "history", "historical"}
-        noncompliant_labels = {"non-compliant", "non-compliant-forecast"}
-        fy_actuals = fy_data[fy_data['Type'].isin(actual_labels)]['ACR'].sum()
+        fy_actuals = fy_data[fy_data['Type'].isin(['actual', 'history', 'historical'])]['ACR'].sum()
         fy_forecast = fy_data[fy_data['Type'] == 'forecast']['ACR'].sum()
-        fy_noncompliant = fy_data[fy_data['Type'].isin(noncompliant_labels)]['ACR'].sum()
+        fy_noncompliant = fy_data[fy_data['Type'].isin(['non-compliant', 'non-compliant-forecast'])]['ACR'].sum()
         fy_total = fy_actuals + fy_forecast + fy_noncompliant
         
         # Show fiscal year metrics
@@ -2507,75 +2367,6 @@ def display_forecast_results():
                     help="Percentage of fiscal year completed based on actuals"
                 )
         
-        # Multi-fiscal-year totals (includes adjustments and non-compliant segments)
-        multi_year_data = chart_model_data.copy()
-        multi_year_data['Date'] = pd.to_datetime(multi_year_data['Date'], errors='coerce')
-        multi_year_data = multi_year_data.dropna(subset=['Date'])
-
-        if not multi_year_data.empty:
-            def _fiscal_year_from_date(ts: pd.Timestamp) -> int:
-                return ts.year + 1 if ts.month >= fiscal_year_start_month else ts.year
-
-            multi_year_data['FiscalYearNum'] = multi_year_data['Date'].apply(_fiscal_year_from_date)
-
-            fy_summary_rows = []
-            for (product_name, fiscal_year), group in multi_year_data.groupby(['Product', 'FiscalYearNum']):
-                actual_sum = group[group['Type'].isin(actual_labels)]['ACR'].sum()
-                forecast_sum = group[group['Type'] == 'forecast']['ACR'].sum()
-                noncompliant_sum = group[group['Type'].isin(noncompliant_labels)]['ACR'].sum()
-                total_sum = actual_sum + forecast_sum + noncompliant_sum
-                if total_sum == 0:
-                    continue
-                completion_pct = (actual_sum / total_sum * 100.0) if total_sum > 0 else np.nan
-                fy_summary_rows.append({
-                    'FiscalYearNum': fiscal_year,
-                    'FiscalYear': f"FY{int(fiscal_year)}",
-                    'Product': product_name,
-                    'ActualsYTD': actual_sum / 1e6,
-                    'ForecastRemaining': forecast_sum / 1e6,
-                    'NonCompliant': noncompliant_sum / 1e6,
-                    'FYTotal': total_sum / 1e6,
-                    'CompletionPct': completion_pct
-                })
-
-            if fy_summary_rows:
-                st.markdown("#### 📊 Fiscal Year Totals by Product")
-                fy_summary_df = pd.DataFrame(fy_summary_rows).sort_values(['FiscalYearNum', 'Product'])
-                fiscal_year_labels = fy_summary_df['FiscalYear'].unique().tolist()
-                month_name = pd.Timestamp(2000, fiscal_year_start_month, 1).strftime('%B')
-                selected_fys = st.multiselect(
-                    "Fiscal years to show",
-                    options=fiscal_year_labels,
-                    default=fiscal_year_labels,
-                    key="fiscal_year_totals_filter"
-                )
-                if selected_fys:
-                    display_df = fy_summary_df[fy_summary_df['FiscalYear'].isin(selected_fys)].copy()
-                else:
-                    display_df = fy_summary_df.copy()
-                display_df = display_df.drop(columns=['FiscalYearNum'])
-                display_df = display_df[
-                    ['Product', 'FiscalYear', 'ActualsYTD', 'ForecastRemaining', 'NonCompliant', 'FYTotal', 'CompletionPct']
-                ]
-                st.dataframe(
-                    display_df,
-                    hide_index=True,
-                    use_container_width=True,
-                    column_config={
-                        "Product": st.column_config.TextColumn("Product"),
-                        "FiscalYear": st.column_config.TextColumn("Fiscal Year"),
-                        "ActualsYTD": st.column_config.NumberColumn("Actuals YTD ($M)", format="%.1f"),
-                        "ForecastRemaining": st.column_config.NumberColumn("Forecast Remaining ($M)", format="%.1f"),
-                        "NonCompliant": st.column_config.NumberColumn("Non-Compliant ($M)", format="%.1f"),
-                        "FYTotal": st.column_config.NumberColumn("FY Total ($M)", format="%.1f"),
-                        "CompletionPct": st.column_config.NumberColumn("Completion (%)", format="%.0f%%")
-                    }
-                )
-                st.caption(
-                    f"Fiscal years displayed: {', '.join(selected_fys) if selected_fys else 'All'} • "
-                    f"Fiscal year start month: {month_name}. Adjustments update totals immediately."
-                )
-
         # Show fiscal year period info
         # Revised logic: elapsed months are determined by presence of ACTUAL data within the fiscal year,
         # not by today's calendar date. If no actuals yet in FY, elapsed = 0 (so remaining = 12).
@@ -2965,44 +2756,32 @@ def display_forecast_results():
                 if any_manual_adjustments:
                     st.info("🔧 Manual forecast adjustments are active. Download will include adjusted values.")
 
-                    stored_manual = st.session_state.get('product_adjustments_applied')
-                    manual_adjustments_changed = (
-                        stored_manual is None
-                        or stored_manual != product_adjustments
-                        or st.session_state.get('adjustment_type') != "manual"
-                    )
+                    # Create adjusted results for download using the original logic
+                    adjusted_results = {}
+                    for model_name, model_data in results.items():
+                        adjusted_model_data = model_data.copy()
 
-                    if manual_adjustments_changed:
-                        adjusted_results = {}
-                        for model_name, model_data in results.items():
-                            adjusted_model_data = model_data.copy()
+                        for product, adjustment_info in product_adjustments.items():
+                            adjustment_pct = adjustment_info['percentage']
+                            start_date = adjustment_info['start_date']
 
-                            for product, adjustment_info in product_adjustments.items():
-                                adjustment_pct = adjustment_info['percentage']
-                                start_date = adjustment_info['start_date']
+                            if adjustment_pct != 0:
+                                # Apply adjustment only to forecast rows for this product starting from the specified date
+                                mask = (
+                                    (adjusted_model_data["Product"] == product) &
+                                    (adjusted_model_data["Type"] == "forecast") &
+                                    (adjusted_model_data["Date"] >= start_date)
+                                )
+                                if mask.any():
+                                    multiplier = 1 + (adjustment_pct / 100)
+                                    adjusted_model_data.loc[mask, "ACR"] = adjusted_model_data.loc[mask, "ACR"] * multiplier
 
-                                if adjustment_pct != 0:
-                                    mask = (
-                                        (adjusted_model_data["Product"] == product) &
-                                        (adjusted_model_data["Type"] == "forecast") &
-                                        (adjusted_model_data["Date"] >= start_date)
-                                    )
-                                    if mask.any():
-                                        multiplier = 1 + (adjustment_pct / 100)
-                                        adjusted_model_data.loc[mask, "ACR"] = adjusted_model_data.loc[mask, "ACR"] * multiplier
+                        adjusted_results[model_name] = adjusted_model_data
 
-                            adjusted_results[model_name] = adjusted_model_data
-
-                        st.session_state.adjusted_forecast_results = adjusted_results
-                        st.session_state.product_adjustments_applied = product_adjustments
-                        st.session_state.adjustment_type = "manual"
-                        st.rerun()
-                else:
-                    if st.session_state.get('adjustment_type') == "manual":
-                        st.session_state.pop('adjusted_forecast_results', None)
-                        st.session_state.pop('product_adjustments_applied', None)
-                        st.session_state.pop('adjustment_type', None)
-                        st.rerun()
+                    # Store adjusted results for download
+                    st.session_state.adjusted_forecast_results = adjusted_results
+                    st.session_state.product_adjustments_applied = product_adjustments
+                    st.session_state.adjustment_type = "manual"
             
             with tab2:
                 # Multi-Fiscal Year Growth Target Controls
