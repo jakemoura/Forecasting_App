@@ -5,9 +5,18 @@ Two professional-grade Streamlit applications for business revenue forecasting w
 - **Forecaster App**: Multi-model time-series forecasting with rigorous backtesting, WAPE-optimized selection, sequential YoY compounding, and business-aware model ranking
 - **Quarter Outlook Forecaster**: Daily-to-quarterly projection with enhanced backtesting validation, WAPE-first accuracy, fiscal calendar support, and renewal/capacity modeling
 
-## 🚀 Latest Release: v1.2.0 - Enhanced Multi-Fiscal Year Forecasting
+## 🚀 Latest Release: v1.3.0 - Fiscal Year Intelligence & Reliability
 
-### 🎯 New: Sequential YoY Compounding
+### 🎯 New in v1.3.0: Smart Fiscal Year YoY Calculations
+- **Accurate fiscal year-over-year growth** - Each fiscal year now calculates its own unique YoY% comparing against the previous fiscal year
+  - FY2027 YoY = FY2027 total vs FY2026 total
+  - FY2028 YoY = FY2028 total vs FY2027 total  
+  - FY2029 YoY = FY2029 total vs FY2028 total
+- **Fixed critical bugs** - Resolved UnboundLocalError that prevented fiscal year controls from loading
+- **Improved stability** - Better error handling and variable initialization throughout adjustment controls
+- **Enhanced setup** - Optimized SETUP.bat with better Python version compatibility and package installation
+
+### 📦 Previous Release (v1.2.0): Sequential YoY Compounding
 - **Multi-fiscal year adjustments** now properly compound across sequential years
 - **Proper baseline calculation** - each year builds from previous year's adjusted values
 - **Universal product support** - all products apply fiscal year changes to charts AND export data
@@ -53,7 +62,7 @@ Two professional-grade Streamlit applications for business revenue forecasting w
 
 **⚠️ Important**: Run .BAT files from File Explorer, not web browsers.
 
-**🚀 v1.2.0 Features**: Enhanced multi-fiscal year planning with sequential YoY compounding, universal product support, comprehensive error handling, and MediaFileStorageError prevention.
+**🚀 v1.3.0 Features**: Smart fiscal year YoY calculations with accurate year-over-year comparisons, critical bug fixes for adjustment controls, and enhanced setup with better Python compatibility.
 
 **📖 Documentation**: See `USER_GUIDE.html` for comprehensive workflow guidance and `Help/SETUP_GUIDE.html` for installation.
 
@@ -235,6 +244,12 @@ git lfs track "*.xls" "*.xlsx" "*.xlsb" "*.zip"
 - **OneDrive file locks**: Close Excel/apps using files, retry after a few seconds
 - **BAT file errors**: Run from File Explorer, not browsers; check Windows execution policy
 - **Package conflicts**: Use provided requirements files and clean Python environment
+
+**🆕 v1.3.0 Enhanced Reliability:**
+- **Accurate fiscal year YoY calculations**: Each fiscal year shows correct year-over-year growth percentage
+- **Fixed adjustment control errors**: Resolved UnboundLocalError preventing fiscal year controls from loading
+- **Improved variable initialization**: Better error prevention throughout the adjustment workflow
+- **Optimized setup process**: Enhanced SETUP.bat with Python 3.11-3.12 compatibility checks
 
 **🆕 v1.2.0 Enhanced Error Handling:**
 - **MediaFileStorageError**: Automatically prevented through session state cleanup
