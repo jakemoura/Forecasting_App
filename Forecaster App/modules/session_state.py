@@ -154,6 +154,7 @@ def clear_session_state_for_new_forecast():
         'business_adjustments_applied', 'business_growth_used', 
         'market_conditions_used', 'adjusted_forecast_results', 
         'product_adjustments_applied', 'yearly_renewals_applied',
+        'yearly_renewals_bytes',
         'business_aware_selection_used', 'forecast_smapes', 
         'forecast_mases', 'forecast_rmses', 'product_smapes',
         'product_mases', 'product_rmses',

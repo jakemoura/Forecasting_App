@@ -191,17 +191,24 @@ def create_renewals_upload_section():
         if yearly_renewals_file:
             try:
                 st.success(f"✅ Uploaded: {yearly_renewals_file.name}")
+                # Cache the uploaded bytes so downstream reads don't exhaust the stream
+                file_bytes = yearly_renewals_file.getvalue()
+                st.session_state['yearly_renewals_bytes'] = file_bytes
                 st.session_state['yearly_renewals_file'] = yearly_renewals_file
                 st.session_state['yearly_renewals_filename'] = yearly_renewals_file.name
+                try:
+                    yearly_renewals_file.seek(0)
+                except Exception:
+                    pass
             except Exception as e:
                 st.error(f"❌ Error processing upload: {str(e)}")
                 # Clear potentially corrupted session state
-                for key in ['yearly_renewals_file', 'yearly_renewals_filename']:
+                for key in ['yearly_renewals_file', 'yearly_renewals_filename', 'yearly_renewals_bytes']:
                     if key in st.session_state:
                         del st.session_state[key]
         else:
             # Clear session state if no file is uploaded
-            for key in ['yearly_renewals_file', 'yearly_renewals_filename']:
+            for key in ['yearly_renewals_file', 'yearly_renewals_filename', 'yearly_renewals_bytes']:
                 if key in st.session_state:
                     try:
                         del st.session_state[key]
@@ -624,6 +631,7 @@ def clear_session_state():
         'business_adjustments_applied', 'business_growth_used', 
         'market_conditions_used', 'adjusted_forecast_results', 
         'product_adjustments_applied', 'yearly_renewals_applied',
+        'yearly_renewals_bytes',
         'business_aware_selection_used'
     ]
     

@@ -28,9 +28,43 @@ def process_yearly_renewals(results, diagnostic_messages):
         return False
     
     try:
-        yearly_file = st.session_state['yearly_renewals_file']
-        yearly_renewals_data = read_any_excel(io.BytesIO(yearly_file.read()))
+        file_bytes = st.session_state.get('yearly_renewals_bytes')
+
+        if not file_bytes:
+            yearly_file = st.session_state['yearly_renewals_file']
+
+            if hasattr(yearly_file, "getvalue"):
+                file_bytes = yearly_file.getvalue()
+            else:
+                if hasattr(yearly_file, "seek"):
+                    yearly_file.seek(0)
+                file_bytes = yearly_file.read()
+
+            if not file_bytes:
+                diagnostic_messages.append("❌ Yearly Renewals Error: Uploaded file is empty after read attempt")
+                return False
+
+            st.session_state['yearly_renewals_bytes'] = file_bytes
+            if hasattr(yearly_file, "seek"):
+                yearly_file.seek(0)
+
+        yearly_renewals_data = read_any_excel(io.BytesIO(file_bytes))
+
+        # Normalize product names to match forecast products (trim/case-insensitive)
+        yearly_renewals_data = _normalize_renewal_products(yearly_renewals_data, results, diagnostic_messages)
         
+        # Normalize column names to expected case
+        col_map = {c.lower(): c for c in yearly_renewals_data.columns}
+        rename_map = {}
+        if 'product' in col_map:
+            rename_map[col_map['product']] = 'Product'
+        if 'date' in col_map:
+            rename_map[col_map['date']] = 'Date'
+        if 'acr' in col_map:
+            rename_map[col_map['acr']] = 'ACR'
+        if rename_map:
+            yearly_renewals_data = yearly_renewals_data.rename(columns=rename_map)
+
         # Validate yearly renewals data structure
         required_yearly_cols = {"Date", "Product", "ACR"}
         if not required_yearly_cols.issubset(yearly_renewals_data.columns):
@@ -109,6 +143,34 @@ def _apply_renewals_to_models(results, yearly_renewals_data, diagnostic_messages
             f"🔮 Future Non-Compliant Upfront RevRec Renewals: {all_future_entries} total projections "
             f"across {unique_months} monthly patterns (based on last 12 months only) - {', '.join(all_future_details)}{'...' if len(all_future_details) > 5 else ''}"
         )
+
+
+def _normalize_renewal_products(yearly_renewals_data: pd.DataFrame, results: dict, diagnostic_messages: list) -> pd.DataFrame:
+    """Align renewal product names to existing forecast products (case/whitespace insensitive)."""
+    try:
+        canon_set = set()
+        for model_df in results.values():
+            if model_df is None:
+                continue
+            frames = model_df if isinstance(model_df, list) else [model_df]
+            for frame in frames:
+                if hasattr(frame, 'columns') and 'Product' in frame.columns:
+                    canon_set.update(frame['Product'].astype(str).str.strip().unique())
+
+        canon_map = {p.lower().strip(): p for p in canon_set}
+
+        df = yearly_renewals_data.copy()
+        df['Product'] = df['Product'].astype(str).str.strip()
+        df['Product'] = df['Product'].apply(lambda p: canon_map.get(p.lower(), p))
+
+        unmatched = [p for p in df['Product'].unique() if p.lower() not in canon_map]
+        if unmatched:
+            diagnostic_messages.append(
+                f"⚠️ Yearly Renewals: {len(unmatched)} product(s) not found in forecast data (check names/spaces): {', '.join(unmatched[:5])}{'...' if len(unmatched) > 5 else ''}"
+            )
+        return df
+    except Exception:
+        return yearly_renewals_data
 
 
 def _project_future_renewals(yearly_renewals_data, forecast_dates, model_name, first_model_name):
