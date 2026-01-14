@@ -5,7 +5,26 @@ Two professional-grade Streamlit applications for business revenue forecasting w
 - **Forecaster App**: Multi-model time-series forecasting with rigorous backtesting, WAPE-optimized selection, sequential YoY compounding, and business-aware model ranking
 - **Quarter Outlook Forecaster**: Daily-to-quarterly projection with enhanced backtesting validation, WAPE-first accuracy, fiscal calendar support, and renewal/capacity modeling
 
-## 🚀 Latest Release: v1.3.0 - Fiscal Year Intelligence & Reliability
+## 🚀 Latest Release: v1.5 - Trend Override & Enhanced Excel Export
+
+### 🎯 New in v1.5: Trend Override Controls & Summary Export
+- **Trend Override Toggle** - Per-product override for declining forecast trends
+  - 📊 Statistical Model (Default)
+  - ➡️ Flat Trend (Maintain Last Value)  
+  - 📈 Continue Recent Growth (Avg of Last 6 Months)
+  - 🎯 Custom Monthly Growth Rate (Pure Compounding)
+- **Enhanced Excel Download** - New 'Best per Product (With Trend Overrides)' option auto-selects when overrides active
+- **Forecast Summary Sheet** - Excel exports now include summary of all adjustments:
+  - Conservatism factor
+  - Trend overrides per product (with annualized rates)
+  - Manual adjustments
+  - Fiscal year growth targets
+  - Renewals overlay status
+- **Bug Fixes** - Fixed 230+ unicode/emoji encoding issues, custom growth now uses pure compounding
+
+---
+
+## 📦 Previous Release: v1.3.0 - Fiscal Year Intelligence & Reliability
 
 ### 🎯 New in v1.3.0: Smart Fiscal Year YoY Calculations
 - **Accurate fiscal year-over-year growth** - Each fiscal year now calculates its own unique YoY% comparing against the previous fiscal year
